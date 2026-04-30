@@ -1,8 +1,13 @@
 import { env } from "../config/env.js";
 
-// Basic interfaces based on Riot's Tournament API
+export interface RiotAccount {
+  puuid: string;
+  gameName: string;
+  tagLine: string;
+}
+
+// Basic interfaces based on Riot's Tournament Stub API
 export interface TournamentCodeParameters {
-  allowedParticipants?: string[];
   enoughPlayers: boolean;
   mapType: "SUMMONERS_RIFT" | "HOWLING_ABYSS";
   metadata: string;
@@ -14,7 +19,6 @@ export interface TournamentCodeParameters {
 export class RiotApiService {
   private apiKey: string;
   private baseUrl = "https://americas.api.riotgames.com";
-  // We can cache these if we want, but for now we'll fetch or require them
   private providerId?: number;
   private tournamentId?: number;
 
@@ -23,7 +27,7 @@ export class RiotApiService {
   }
 
   get isConfigured(): boolean {
-    return this.apiKey.length > 0 && !!env.WEBHOOK_URL;
+    return this.apiKey.length > 0;
   }
 
   private async request<T>(endpoint: string, method = "GET", body?: any): Promise<T> {
@@ -50,33 +54,57 @@ export class RiotApiService {
     return response.json();
   }
 
-  async getProviderId(): Promise<number> {
+  /**
+   * Look up a Riot account by Nick#Tag using the account-v1 API.
+   * This works with a Development API Key.
+   */
+  async getAccountByRiotId(gameName: string, tagLine: string): Promise<RiotAccount> {
+    const data = await this.request<{ puuid: string; gameName: string; tagLine: string }>(
+      `/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`
+    );
+    return { puuid: data.puuid, gameName: data.gameName, tagLine: data.tagLine };
+  }
+
+  /**
+   * Look up a Riot account by PUUID.
+   */
+  async getAccountByPuuid(puuid: string): Promise<RiotAccount> {
+    const data = await this.request<{ puuid: string; gameName: string; tagLine: string }>(
+      `/riot/account/v1/accounts/by-puuid/${encodeURIComponent(puuid)}`
+    );
+    return { puuid: data.puuid, gameName: data.gameName, tagLine: data.tagLine };
+  }
+
+  // ─── Tournament Stub (works with Dev Key) ───────────────────────────────────
+
+  private async getProviderId(): Promise<number> {
     if (this.providerId) return this.providerId;
 
-    // Register a provider
-    const providerId = await this.request<number>("/lol/tournament/v5/providers", "POST", {
+    // tournament-stub-v5 providers — works with dev key
+    const providerId = await this.request<number>("/lol/tournament-stub/v5/providers", "POST", {
       region: "BR",
-      url: env.WEBHOOK_URL,
+      url: env.WEBHOOK_URL ?? "https://codex-inhouse-v2.onrender.com/riot/callback",
     });
     this.providerId = providerId;
     return providerId;
   }
 
-  async getTournamentId(): Promise<number> {
+  private async getTournamentId(): Promise<number> {
     if (this.tournamentId) return this.tournamentId;
 
     const providerId = await this.getProviderId();
-    const tournamentId = await this.request<number>("/lol/tournament/v5/tournaments", "POST", {
+    // tournament-stub-v5 tournaments
+    const tournamentId = await this.request<number>("/lol/tournament-stub/v5/tournaments", "POST", {
       name: "Inhouse Discord Matches",
-      providerId: providerId,
+      providerId,
     });
     this.tournamentId = tournamentId;
     return tournamentId;
   }
 
-  async createTournamentCode(matchId: string, teamSize: number = 5): Promise<string> {
+  async createTournamentCode(matchId: string, teamSize = 5): Promise<string> {
     if (!this.isConfigured) {
-      throw new Error("Riot Tournament API is not configured (missing key or webhook url).");
+      throw new Error("RIOT_API_KEY is not configured.");
     }
 
     const tournamentId = await this.getTournamentId();
@@ -89,8 +117,9 @@ export class RiotApiService {
       teamSize,
     };
 
+    // tournament-stub-v5 codes — works with dev key!
     const codes = await this.request<string[]>(
-      `/lol/tournament/v5/codes?count=1&tournamentId=${tournamentId}`,
+      `/lol/tournament-stub/v5/codes?count=1&tournamentId=${tournamentId}`,
       "POST",
       params,
     );

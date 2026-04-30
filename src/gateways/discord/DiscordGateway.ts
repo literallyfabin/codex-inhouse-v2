@@ -826,32 +826,44 @@ export class DiscordGateway {
   }
 
   private async handleLinkAccount(interaction: ChatInputCommandInteraction): Promise<void> {
-    if (!riotOAuthService.isConfigured) {
+    if (!riotApiService.isConfigured) {
       await interaction.reply({
-        content: "❌ A integração com a Riot ainda não está configurada neste servidor. Aguarde o administrador ativar o sistema.",
+        content: "❌ A integração com a Riot não está configurada. Contate o administrador.",
         ephemeral: true,
       });
       return;
     }
+
+    const nick = interaction.options.getString("nick", true).trim();
+    const tag = interaction.options.getString("tag", true).trim().replace(/^#/, "");
+
+    await interaction.deferReply({ ephemeral: true });
 
     // Check if already linked
     const existing = await riotOAuthService.getRiotAccountForDiscordId(interaction.user.id);
     if (existing) {
-      const { buildAlreadyLinkedEmbed: buildAlreadyLinked } = await import("./components.js");
-      await interaction.reply({
-        embeds: [buildAlreadyLinked(existing.gameName, existing.tagLine)],
-        ephemeral: true,
+      await interaction.editReply({
+        embeds: [buildAlreadyLinkedEmbed(existing.gameName, existing.tagLine)],
       });
       return;
     }
 
-    const authUrl = riotOAuthService.buildAuthUrl(interaction.user.id);
-    const { embed, row } = buildLinkAccountEmbed(authUrl);
-    await interaction.reply({
-      embeds: [embed],
-      components: [row],
-      ephemeral: true,
-    });
+    // Look up account via Riot API
+    try {
+      const account = await riotApiService.getAccountByRiotId(nick, tag);
+
+      // Save to Supabase via riotOAuthService
+      await riotOAuthService["saveRiotAccount"](interaction.user.id, account);
+
+      const { buildLinkSuccessEmbed } = await import("./components.js");
+      await interaction.editReply({
+        embeds: [buildLinkSuccessEmbed(account.gameName, account.tagLine)],
+      });
+    } catch {
+      await interaction.editReply(
+        `❌ Conta **${nick}#${tag}** não encontrada. Verifique o nick e a tag e tente novamente.`,
+      );
+    }
   }
 
   private async handleMmrHistory(interaction: ChatInputCommandInteraction): Promise<void> {

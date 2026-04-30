@@ -296,7 +296,19 @@ export const compareCommand = new SlashCommandBuilder()
 
 export const linkAccountCommand = new SlashCommandBuilder()
   .setName("link-account")
-  .setDescription("Vincula sua conta do League of Legends ao Discord via login oficial da Riot.");
+  .setDescription("Vincula sua conta do League of Legends (Nick#Tag) ao Discord.")
+  .addStringOption((option) =>
+    option
+      .setName("nick")
+      .setDescription("Seu nick do LoL (ex: Faker).")
+      .setRequired(true),
+  )
+  .addStringOption((option) =>
+    option
+      .setName("tag")
+      .setDescription("Sua tag do LoL sem o # (ex: BR1).")
+      .setRequired(true),
+  );
 
 export const adminChannelCommand = new SlashCommandBuilder()
   .setName("admin-channel")
