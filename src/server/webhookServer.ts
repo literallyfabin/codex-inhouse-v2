@@ -34,6 +34,13 @@ export class WebhookServer {
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
+    // Route: GET / — Health check (required by Render)
+    if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", service: "codex-inhouse-bot" }));
+      return;
+    }
+
     // Route: GET /riot.txt — Riot domain ownership verification
     if (req.method === "GET" && req.url === "/riot.txt") {
       res.writeHead(200, { "Content-Type": "text/plain" });
