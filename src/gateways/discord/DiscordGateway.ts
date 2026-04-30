@@ -24,6 +24,7 @@ import { ReadyCheckRepository } from "../../services/readyCheckRepository.js";
 import { StatsService, type RankingEntry } from "../../services/statsService.js";
 import { UserService } from "../../services/userService.js";
 import { riotApiService } from "../../services/riotApiService.js";
+import { riotOAuthService } from "../../services/riotOAuthService.js";
 import {
   RANKING_PAGE_SIZE,
   ROLE_EMOJI_NAMES,
@@ -31,6 +32,8 @@ import {
   buildDuoButtons,
   buildDuoInviteEmbed,
   buildHistoryEmbed,
+  buildLinkAccountEmbed,
+  buildAlreadyLinkedEmbed,
   buildMatchEmbed,
   buildMmrHistoryEmbed,
   buildQueueButtons,
@@ -161,6 +164,16 @@ export class DiscordGateway {
     }, 60_000);
   }
 
+  async sendLinkSuccessDm(discordId: string, gameName: string, tagLine: string): Promise<void> {
+    try {
+      const user = await this.client.users.fetch(discordId);
+      const { buildLinkSuccessEmbed } = await import("./components.js");
+      await user.send({ embeds: [buildLinkSuccessEmbed(gameName, tagLine)] });
+    } catch {
+      // DMs may be disabled — silently ignore
+    }
+  }
+
   private async handleInteraction(interaction: Interaction): Promise<void> {
     if (interaction.isChatInputCommand()) {
       await this.handleCommand(interaction);
@@ -232,6 +245,10 @@ export class DiscordGateway {
 
       case "compare":
         await this.handleCompare(interaction);
+        return;
+
+      case "link-account":
+        await this.handleLinkAccount(interaction);
         return;
 
       case "admin-channel":
@@ -805,6 +822,35 @@ export class DiscordGateway {
     const comparison = await this.statsService.getComparison(interaction.guildId, user1.id, user2.id);
     await interaction.editReply({ 
       embeds: [buildCompareEmbed(discordUser1.displayName, discordUser2.displayName, comparison)] 
+    });
+  }
+
+  private async handleLinkAccount(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!riotOAuthService.isConfigured) {
+      await interaction.reply({
+        content: "❌ A integração com a Riot ainda não está configurada neste servidor. Aguarde o administrador ativar o sistema.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    // Check if already linked
+    const existing = await riotOAuthService.getRiotAccountForDiscordId(interaction.user.id);
+    if (existing) {
+      const { buildAlreadyLinkedEmbed: buildAlreadyLinked } = await import("./components.js");
+      await interaction.reply({
+        embeds: [buildAlreadyLinked(existing.gameName, existing.tagLine)],
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const authUrl = riotOAuthService.buildAuthUrl(interaction.user.id);
+    const { embed, row } = buildLinkAccountEmbed(authUrl);
+    await interaction.reply({
+      embeds: [embed],
+      components: [row],
+      ephemeral: true,
     });
   }
 

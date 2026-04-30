@@ -4,6 +4,7 @@ import {
   ButtonStyle,
   EmbedBuilder,
   SlashCommandBuilder,
+  type MessageActionRowComponentBuilder,
 } from "discord.js";
 import type { BalancedMatch, Role, Team } from "../../core/models/types.js";
 import { ROLES } from "../../core/models/types.js";
@@ -293,6 +294,10 @@ export const compareCommand = new SlashCommandBuilder()
     option.setName("jogador2").setDescription("Segundo jogador (opcional). Se vazio, compara com você."),
   );
 
+export const linkAccountCommand = new SlashCommandBuilder()
+  .setName("link-account")
+  .setDescription("Vincula sua conta do League of Legends ao Discord via login oficial da Riot.");
+
 export const adminChannelCommand = new SlashCommandBuilder()
   .setName("admin-channel")
   .setDescription("Marca ou desmarca o canal atual para funcoes do bot.")
@@ -391,6 +396,7 @@ export const discordCommands = [
   cancelCommand,
   remakeCommand,
   compareCommand,
+  linkAccountCommand,
   adminChannelCommand,
   adminConfigCommand,
   adminResetCommand,
@@ -989,3 +995,42 @@ export const buildCompareEmbed = (
     )
     .setThumbnail("https://media.tenor.com/T0T_T1Hk0wAAAAAj/league-of-legends-esports.gif");
 };
+
+export const buildLinkAccountEmbed = (authUrl: string): {
+  embed: EmbedBuilder;
+  row: ActionRowBuilder<MessageActionRowComponentBuilder>;
+} => {
+  const embed = new EmbedBuilder()
+    .setColor(COLORS.gold)
+    .setTitle("🔗 Vinculação de Conta Riot")
+    .setDescription(
+      "Para vincular sua conta do League of Legends, clique no botão abaixo.\n\n" +
+      "Você será redirecionado para o **site oficial da Riot Games** para fazer login com segurança.\n\n" +
+      "> 🔒 Nenhuma senha é compartilhada conosco. O login ocorre 100% nos servidores da Riot.",
+    )
+    .setFooter({ text: "O link expira em 10 minutos." })
+    .setThumbnail("https://upload.wikimedia.org/wikipedia/commons/thumb/3/33/Riot_Games_Logo_2022.svg/240px-Riot_Games_Logo_2022.svg.png");
+
+  const row = new ActionRowBuilder<MessageActionRowComponentBuilder>().addComponents(
+    new ButtonBuilder()
+      .setLabel("🎮 Entrar com Riot")
+      .setStyle(ButtonStyle.Link)
+      .setURL(authUrl),
+  );
+
+  return { embed, row };
+};
+
+export const buildLinkSuccessEmbed = (gameName: string, tagLine: string): EmbedBuilder =>
+  new EmbedBuilder()
+    .setColor(COLORS.green)
+    .setTitle("✅ Conta Vinculada com Sucesso!")
+    .setDescription(`Sua conta **${gameName}#${tagLine}** foi vinculada ao seu Discord.\n\nAgora você participa de Inhouses com autenticação verificada pela Riot!`)
+    .setThumbnail("https://media.tenor.com/bm8Q6yAlsHcAAAAj/verified.gif");
+
+export const buildAlreadyLinkedEmbed = (gameName: string, tagLine: string): EmbedBuilder =>
+  new EmbedBuilder()
+    .setColor(COLORS.blue)
+    .setTitle("🔗 Conta Já Vinculada")
+    .setDescription(`Sua conta atual é **${gameName}#${tagLine}**.\n\nSe quiser trocar de conta, use \`/link-account\` novamente.`);
+

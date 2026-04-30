@@ -4,7 +4,7 @@ import { MatchService } from "./services/matchService.js";
 import { WebhookServer } from "./server/webhookServer.js";
 
 const main = async (): Promise<void> => {
-  // Start the Webhook Server for Riot callbacks
+  // Start the Webhook Server for Riot callbacks and OAuth
   const matchService = new MatchService();
   const webhookServer = new WebhookServer(matchService);
   webhookServer.start();
@@ -16,6 +16,11 @@ const main = async (): Promise<void> => {
 
   const discordGateway = new DiscordGateway(env.DISCORD_TOKEN);
   await discordGateway.start();
+
+  // After the Discord client is ready, register the notifier so users get a DM
+  webhookServer.setDiscordNotifier(async (discordId, gameName, tagLine) => {
+    await discordGateway.sendLinkSuccessDm(discordId, gameName, tagLine);
+  });
 };
 
 main().catch((error: unknown) => {

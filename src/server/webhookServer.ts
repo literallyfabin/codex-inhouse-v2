@@ -1,7 +1,7 @@
 import http from "node:http";
 import { env } from "../config/env.js";
 import { MatchService } from "../services/matchService.js";
-import { riotApiService } from "../services/riotApiService.js";
+import { riotOAuthService } from "../services/riotOAuthService.js";
 
 // Basic structure of Riot's tournament callback
 interface RiotCallbackPayload {
@@ -16,21 +16,28 @@ interface RiotCallbackPayload {
   region: string;
 }
 
+type DiscordNotifier = (discordId: string, gameName: string, tagLine: string) => Promise<void>;
+
 export class WebhookServer {
   private server: http.Server;
+  private discordNotifier?: DiscordNotifier;
 
   constructor(private matchService: MatchService) {
     this.server = http.createServer(this.handleRequest.bind(this));
   }
 
+  /**
+   * Registers a callback that sends a Discord DM when a Riot account is linked.
+   */
+  setDiscordNotifier(notifier: DiscordNotifier): void {
+    this.discordNotifier = notifier;
+  }
+
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
+    // Route: POST /riot/callback — Riot tournament match result
     if (req.method === "POST" && req.url === "/riot/callback") {
       let body = "";
-
-      req.on("data", (chunk) => {
-        body += chunk.toString();
-      });
-
+      req.on("data", (chunk) => { body += chunk.toString(); });
       req.on("end", async () => {
         try {
           const payload: RiotCallbackPayload = JSON.parse(body);
@@ -43,10 +50,43 @@ export class WebhookServer {
           res.end(JSON.stringify({ status: "error", message: "Failed to process" }));
         }
       });
-    } else {
-      res.writeHead(404);
-      res.end();
+      return;
     }
+
+    // Route: GET /riot/oauth/callback — RSO OAuth2 redirect from Riot
+    if (req.method === "GET" && req.url?.startsWith("/riot/oauth/callback")) {
+      const url = new URL(req.url, `http://localhost`);
+      const code = url.searchParams.get("code");
+      const state = url.searchParams.get("state");
+
+      if (!code || !state) {
+        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(this.htmlPage("❌ Erro", "Parâmetros inválidos. Tente novamente com /link-account."));
+        return;
+      }
+
+      try {
+        const { discordId, account } = await riotOAuthService.handleCallback(code, state);
+        // Notify the user on Discord via DM if possible
+        if (this.discordNotifier) {
+          await this.discordNotifier(discordId, account.gameName, account.tagLine).catch(console.error);
+        }
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(this.htmlPage(
+          "✅ Conta Vinculada!",
+          `Sua conta <strong>${account.gameName}#${account.tagLine}</strong> foi vinculada com sucesso ao seu Discord!<br><br>Pode fechar esta aba e voltar ao Discord.`
+        ));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Erro desconhecido.";
+        console.error("OAuth callback error:", err);
+        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(this.htmlPage("❌ Falha na Vinculação", msg));
+      }
+      return;
+    }
+
+    res.writeHead(404);
+    res.end();
   }
 
   private async processRiotCallback(payload: RiotCallbackPayload) {
@@ -112,4 +152,56 @@ export class WebhookServer {
   stop() {
     this.server.close();
   }
+
+  private htmlPage(title: string, body: string): string {
+    return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title} — Inhouse Bot</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f0f14;
+      color: #e8e0d0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .card {
+      background: #1a1a24;
+      border: 1px solid #2a2a3a;
+      border-radius: 16px;
+      padding: 48px 40px;
+      max-width: 480px;
+      text-align: center;
+    }
+    h1 { font-size: 24px; margin-bottom: 16px; }
+    p { color: #a0a0b0; line-height: 1.6; }
+    .riot-badge {
+      display: inline-block;
+      background: #d13639;
+      color: white;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      padding: 4px 10px;
+      border-radius: 4px;
+      margin-bottom: 24px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="riot-badge">RIOT GAMES</div>
+    <h1>${title}</h1>
+    <p>${body}</p>
+  </div>
+</body>
+</html>`;
+  }
 }
+

@@ -19,6 +19,8 @@ const envSchema = z.object({
   QUEUE_RESET_TIME: z.string().regex(/^\d{2}:\d{2}$/).default("12:00"),
   RIOT_API_KEY: optionalNonEmptyString,
   WEBHOOK_URL: optionalNonEmptyString,
+  RIOT_CLIENT_ID: optionalNonEmptyString,
+  RIOT_CLIENT_SECRET: optionalNonEmptyString,
   PORT: z.preprocess(
     (value) => (value === undefined ? "8080" : value),
     z.string().regex(/^\d+$/)
