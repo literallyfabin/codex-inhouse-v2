@@ -1,0 +1,466 @@
+import type {
+  BalancedMatch,
+  PersistedMatch,
+  PlayerRating,
+  QueuePlayer,
+  RatedQueuePlayer,
+  Role,
+  Team,
+  WinningTeam,
+} from "../core/models/types.js";
+import type { Json } from "../core/models/database.js";
+import { conservativeMmr } from "../core/matchmaking/trueskillMath.js";
+import { MatchmakingService } from "../core/matchmaking/MatchmakingService.js";
+import { supabase } from "./supabaseClient.js";
+
+const DEFAULT_MU = 25;
+const DEFAULT_SIGMA = 25 / 3;
+
+const jsonStringArray = (value: Json): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is string => typeof item === "string");
+};
+
+const participantPayload = (matchId: string, match: BalancedMatch) =>
+  [...match.teamBlue, ...match.teamRed].map((slot) => ({
+    match_id: matchId,
+    user_id: slot.player.userId,
+    role: slot.role,
+    team: slot.team,
+    mu_before: slot.player.rating.mu,
+    sigma_before: slot.player.rating.sigma,
+    display_name: slot.player.displayName,
+  }));
+
+const mapPersistedMatch = (row: {
+  id: string;
+  guild_id: string;
+  status: PersistedMatch["status"];
+  team_blue: Json;
+  team_red: Json;
+  winning_team: WinningTeam;
+  blue_expected_winrate: number;
+  mu_difference: number;
+  created_at: string;
+  completed_at: string | null;
+}): PersistedMatch => ({
+  id: row.id,
+  guildId: row.guild_id,
+  status: row.status,
+  teamBlue: jsonStringArray(row.team_blue),
+  teamRed: jsonStringArray(row.team_red),
+  winningTeam: row.winning_team,
+  blueExpectedWinrate: row.blue_expected_winrate,
+  muDifference: row.mu_difference,
+  createdAt: row.created_at,
+  completedAt: row.completed_at,
+});
+
+export interface OngoingMatchForUser {
+  matchId: string;
+  team: Team;
+  participantUserIds: string[];
+}
+
+export interface MatchContext {
+  guildId: string;
+  participantUserIds: string[];
+  sourceChannelId: string | null;
+}
+
+export class MatchService {
+  constructor(private readonly matchmaking = new MatchmakingService()) {}
+
+  async hydrateRatings(players: readonly QueuePlayer[]): Promise<RatedQueuePlayer[]> {
+    const guildIds = new Set(players.map((player) => player.guildId));
+    if (guildIds.size !== 1) {
+      throw new Error("All players in a match must belong to the same guild.");
+    }
+
+    const guildId = players[0]?.guildId;
+    if (!guildId) {
+      throw new Error("Cannot hydrate ratings without a guild id.");
+    }
+
+    const defaultRows = players.map((player) => ({
+      guild_id: guildId,
+      user_id: player.userId,
+      role: player.role,
+      mu: DEFAULT_MU,
+      sigma: DEFAULT_SIGMA,
+      updated_at: new Date().toISOString(),
+    }));
+
+    const { error: upsertError } = await supabase
+      .from("player_stats")
+      .upsert(defaultRows, { onConflict: "guild_id,user_id,role", ignoreDuplicates: true });
+
+    if (upsertError) {
+      throw new Error(`Failed to prepare player ratings: ${upsertError.message}`);
+    }
+
+    const userIds = players.map((player) => player.userId);
+    const { data, error } = await supabase
+      .from("player_stats")
+      .select("guild_id, user_id, role, mu, sigma, mmr")
+      .eq("guild_id", guildId)
+      .in("user_id", userIds);
+
+    if (error) {
+      throw new Error(`Failed to load player ratings: ${error.message}`);
+    }
+
+    const ratingsByKey = new Map<string, PlayerRating>();
+    for (const row of data) {
+      ratingsByKey.set(this.ratingKey(row.user_id, row.role), {
+        guildId: row.guild_id,
+        userId: row.user_id,
+        role: row.role,
+        mu: row.mu,
+        sigma: row.sigma,
+        mmr: row.mmr,
+      });
+    }
+
+    return players.map((player) => {
+      const rating = ratingsByKey.get(this.ratingKey(player.userId, player.role));
+      if (!rating) {
+        throw new Error(`Missing rating for user ${player.userId} on role ${player.role}.`);
+      }
+
+      return { ...player, rating };
+    });
+  }
+
+  async createMatch(match: BalancedMatch): Promise<PersistedMatch> {
+    const guildId = match.teamBlue[0]?.player.guildId ?? match.teamRed[0]?.player.guildId;
+    if (!guildId) {
+      throw new Error("Cannot create match without a guild id.");
+    }
+
+    const teamBlueIds = match.teamBlue.map((slot) => slot.player.userId);
+    const teamRedIds = match.teamRed.map((slot) => slot.player.userId);
+    const participantUserIds = [...teamBlueIds, ...teamRedIds];
+    const ongoingUserIds = await this.findOngoingParticipantUserIds(guildId, participantUserIds);
+    if (ongoingUserIds.size > 0) {
+      throw new Error(
+        `Cannot create match: ${ongoingUserIds.size} participant(s) already have an ongoing match.`,
+      );
+    }
+
+    const { data, error } = await supabase
+      .from("matches")
+      .insert({
+        guild_id: guildId,
+        status: "ONGOING",
+        team_blue: teamBlueIds,
+        team_red: teamRedIds,
+        winning_team: "NONE",
+        blue_expected_winrate: match.blueExpectedWinrate,
+        mu_difference: match.muDifference,
+        source_channel_id: match.teamBlue[0]?.player.channelId ?? null,
+      })
+      .select(
+        "id, guild_id, status, team_blue, team_red, winning_team, blue_expected_winrate, mu_difference, created_at, completed_at",
+      )
+      .single();
+
+    if (error) {
+      throw new Error(`Failed to create match: ${error.message}`);
+    }
+
+    const { error: participantsError } = await supabase
+      .from("match_participants")
+      .insert(participantPayload(data.id, match));
+
+    if (participantsError) {
+      throw new Error(`Failed to create match participants: ${participantsError.message}`);
+    }
+
+    return mapPersistedMatch(data);
+  }
+
+  async completeMatch(matchId: string, winningTeam: Exclude<WinningTeam, "NONE">): Promise<void> {
+    const { data: matchRow, error: matchLoadError } = await supabase
+      .from("matches")
+      .select("guild_id, status")
+      .eq("id", matchId)
+      .single();
+
+    if (matchLoadError) {
+      throw new Error(`Failed to load match ${matchId}: ${matchLoadError.message}`);
+    }
+
+    if (matchRow.status !== "ONGOING") {
+      throw new Error(`Match ${matchId} cannot be completed from status ${matchRow.status}.`);
+    }
+
+    const { data: participantRows, error: participantsError } = await supabase
+      .from("match_participants")
+      .select("user_id, role, team, mu_before, sigma_before, display_name")
+      .eq("match_id", matchId);
+
+    if (participantsError) {
+      throw new Error(`Failed to load match participants: ${participantsError.message}`);
+    }
+
+    if (participantRows.length !== 10) {
+      throw new Error(`Match ${matchId} has ${participantRows.length} participants; expected 10.`);
+    }
+
+    const match = this.rebuildBalancedMatch(participantRows);
+    const updates = this.matchmaking.calculateUpdatedRatings(match, winningTeam);
+    const now = new Date().toISOString();
+
+    const { error: statsError } = await supabase.from("player_stats").upsert(
+      updates.map((rating) => ({
+        guild_id: matchRow.guild_id,
+        user_id: rating.userId,
+        role: rating.role,
+        mu: rating.mu,
+        sigma: rating.sigma,
+        updated_at: now,
+      })),
+      { onConflict: "guild_id,user_id,role" },
+    );
+
+    if (statsError) {
+      throw new Error(`Failed to update player stats: ${statsError.message}`);
+    }
+
+    const { error: matchError } = await supabase
+      .from("matches")
+      .update({
+        status: "COMPLETED",
+        winning_team: winningTeam,
+        completed_at: now,
+      })
+      .eq("id", matchId);
+
+    if (matchError) {
+      throw new Error(`Failed to complete match: ${matchError.message}`);
+    }
+  }
+
+  async cancelMatch(matchId: string): Promise<void> {
+    const { data: matchRow, error: matchLoadError } = await supabase
+      .from("matches")
+      .select("status")
+      .eq("id", matchId)
+      .single();
+
+    if (matchLoadError) {
+      throw new Error(`Failed to load match ${matchId}: ${matchLoadError.message}`);
+    }
+
+    if (matchRow.status === "COMPLETED") {
+      throw new Error(`Match ${matchId} is already completed and cannot be cancelled.`);
+    }
+
+    const { error } = await supabase
+      .from("matches")
+      .update({
+        status: "CANCELLED",
+        winning_team: "NONE",
+        completed_at: new Date().toISOString(),
+      })
+      .eq("id", matchId);
+
+    if (error) {
+      throw new Error(`Failed to cancel match: ${error.message}`);
+    }
+  }
+
+  async getMatchContext(matchId: string): Promise<MatchContext> {
+    const { data: matchRow, error: matchError } = await supabase
+      .from("matches")
+      .select("guild_id, source_channel_id")
+      .eq("id", matchId)
+      .single();
+
+    if (matchError) {
+      throw new Error(`Failed to load match context: ${matchError.message}`);
+    }
+
+    const { data: participantRows, error: participantError } = await supabase
+      .from("match_participants")
+      .select("user_id")
+      .eq("match_id", matchId);
+
+    if (participantError) {
+      throw new Error(`Failed to load match participants: ${participantError.message}`);
+    }
+
+    return {
+      guildId: matchRow.guild_id,
+      participantUserIds: participantRows.map((row) => row.user_id),
+      sourceChannelId: matchRow.source_channel_id,
+    };
+  }
+
+  async setDiscordMessageId(matchId: string, discordMessageId: string): Promise<void> {
+    const { error } = await supabase
+      .from("matches")
+      .update({ discord_message_id: discordMessageId })
+      .eq("id", matchId);
+
+    if (error) {
+      throw new Error(`Failed to save Discord message id: ${error.message}`);
+    }
+  }
+
+  async hasOngoingMatchForUser(guildId: string, userId: string): Promise<boolean> {
+    return (await this.findOngoingParticipantUserIds(guildId, [userId])).size > 0;
+  }
+
+  async findOngoingParticipantUserIds(
+    guildId: string,
+    userIds: readonly string[],
+  ): Promise<Set<string>> {
+    const uniqueUserIds = [...new Set(userIds)];
+    if (uniqueUserIds.length === 0) {
+      return new Set();
+    }
+
+    const { data: participantRows, error: participantError } = await supabase
+      .from("match_participants")
+      .select("match_id, user_id")
+      .in("user_id", uniqueUserIds);
+
+    if (participantError) {
+      throw new Error(`Failed to check ongoing match participants: ${participantError.message}`);
+    }
+
+    const matchIds = participantRows.map((row) => row.match_id);
+    if (matchIds.length === 0) {
+      return new Set();
+    }
+
+    const { data, error } = await supabase
+      .from("matches")
+      .select("id")
+      .eq("guild_id", guildId)
+      .eq("status", "ONGOING")
+      .in("id", [...new Set(matchIds)]);
+
+    if (error) {
+      throw new Error(`Failed to check ongoing matches: ${error.message}`);
+    }
+
+    const ongoingMatchIds = new Set(data.map((row) => row.id));
+    return new Set(
+      participantRows
+        .filter((row) => ongoingMatchIds.has(row.match_id))
+        .map((row) => row.user_id),
+    );
+  }
+
+  async getLatestOngoingMatchForUser(
+    guildId: string,
+    userId: string,
+  ): Promise<OngoingMatchForUser | null> {
+    const { data: userParticipantRows, error: participantLoadError } = await supabase
+      .from("match_participants")
+      .select("match_id, team")
+      .eq("user_id", userId);
+
+    if (participantLoadError) {
+      throw new Error(`Failed to load user matches: ${participantLoadError.message}`);
+    }
+
+    const matchIds = userParticipantRows.map((row) => row.match_id);
+    if (matchIds.length === 0) {
+      return null;
+    }
+
+    const { data: matchRows, error: matchLoadError } = await supabase
+      .from("matches")
+      .select("id")
+      .eq("guild_id", guildId)
+      .eq("status", "ONGOING")
+      .in("id", matchIds)
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (matchLoadError) {
+      throw new Error(`Failed to load ongoing match: ${matchLoadError.message}`);
+    }
+
+    const matchId = matchRows[0]?.id;
+    if (!matchId) {
+      return null;
+    }
+
+    const { data: participantRows, error: participantsError } = await supabase
+      .from("match_participants")
+      .select("user_id, team")
+      .eq("match_id", matchId);
+
+    if (participantsError) {
+      throw new Error(`Failed to load match participants: ${participantsError.message}`);
+    }
+
+    const requesterParticipant = participantRows.find((row) => row.user_id === userId);
+    if (!requesterParticipant) {
+      return null;
+    }
+
+    return {
+      matchId,
+      team: requesterParticipant.team,
+      participantUserIds: participantRows.map((row) => row.user_id),
+    };
+  }
+
+  private rebuildBalancedMatch(
+    rows: readonly {
+      user_id: string;
+      role: Role;
+      team: Team;
+      mu_before: number;
+      sigma_before: number;
+      display_name: string | null;
+    }[],
+  ): BalancedMatch {
+    const toSlot = (row: (typeof rows)[number]) => ({
+      team: row.team,
+      role: row.role,
+      player: {
+        userId: row.user_id,
+        guildId: "loaded-from-match",
+        channelId: "loaded-from-match",
+        platform: "discord" as const,
+        platformUserId: row.user_id,
+        displayName: row.display_name ?? row.user_id,
+        role: row.role,
+        joinedAt: new Date(0),
+        rating: {
+          guildId: "loaded-from-match",
+          userId: row.user_id,
+          role: row.role,
+          mu: row.mu_before,
+          sigma: row.sigma_before,
+          mmr: conservativeMmr(row.mu_before, row.sigma_before),
+        },
+      },
+    });
+
+    const teamBlue = rows.filter((row) => row.team === "BLUE").map(toSlot);
+    const teamRed = rows.filter((row) => row.team === "RED").map(toSlot);
+
+    return {
+      teamBlue,
+      teamRed,
+      blueExpectedWinrate: 0.5,
+      muDifference: 0,
+      balanceScore: 0,
+    };
+  }
+
+  private ratingKey(userId: string, role: Role): string {
+    return `${userId}:${role}`;
+  }
+}
