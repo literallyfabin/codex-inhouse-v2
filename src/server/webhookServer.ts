@@ -160,7 +160,24 @@ export class WebhookServer {
     if (!env.PORT) return;
     this.server.listen(env.PORT, () => {
       console.log(`Webhook server listening on port ${env.PORT}`);
+      this.keepAlive();
     });
+  }
+
+  private keepAlive() {
+    const url = env.WEBHOOK_URL
+      ? env.WEBHOOK_URL.replace("/riot/callback", "/health")
+      : `http://localhost:${env.PORT}/health`;
+
+    const TEN_MINUTES = 10 * 60 * 1000;
+    setInterval(async () => {
+      try {
+        await fetch(url);
+        console.log(`[KeepAlive] Pinged ${url}`);
+      } catch {
+        console.warn(`[KeepAlive] Failed to ping ${url}`);
+      }
+    }, TEN_MINUTES);
   }
 
   stop() {
