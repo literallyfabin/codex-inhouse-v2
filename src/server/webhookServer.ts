@@ -34,6 +34,13 @@ export class WebhookServer {
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
+    // Route: GET /riot.txt — Riot domain ownership verification
+    if (req.method === "GET" && req.url === "/riot.txt") {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end(process.env.RIOT_VERIFICATION_TOKEN ?? "");
+      return;
+    }
+
     // Route: POST /riot/callback — Riot tournament match result
     if (req.method === "POST" && req.url === "/riot/callback") {
       let body = "";
