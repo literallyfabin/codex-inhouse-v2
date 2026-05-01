@@ -18,6 +18,10 @@ const envSchema = z.object({
     .transform((value) => value === "true"),
   QUEUE_RESET_TIME: z.string().regex(/^\d{2}:\d{2}$/).default("12:00"),
   RIOT_API_KEY: optionalNonEmptyString,
+  RIOT_TOURNAMENT_CODES_ENABLED: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
   WEBHOOK_URL: optionalNonEmptyString,
   RIOT_CLIENT_ID: optionalNonEmptyString,
   RIOT_CLIENT_SECRET: optionalNonEmptyString,

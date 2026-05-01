@@ -42,7 +42,6 @@ import {
   buildRankingEmbed,
   buildReadyCheckButtons,
   buildReadyCheckEmbed,
-  buildSetupEmbed,
   buildStatsEmbed,
   buildValidationButtons,
   buildValidationEmbed,
@@ -191,12 +190,20 @@ export class DiscordGateway {
         await this.handleSetupInhouse(interaction);
         return;
 
+      case "setup-ranking":
+        await this.handleSetupRanking(interaction);
+        return;
+
       case "queue":
         await this.handleQueueCommand(interaction);
         return;
 
       case "queue-status":
         {
+          if (!(await this.ensureQueueChannel(interaction))) {
+            return;
+          }
+
           const presentation = await this.presentationForGuild(interaction.guildId);
           await interaction.reply({
             embeds: [buildQueueEmbed(this.queueService.snapshot(interaction.channelId), presentation)],
@@ -339,17 +346,39 @@ export class DiscordGateway {
       return;
     }
 
-    await this.guildService.markChannel(interaction.guildId, interaction.channelId, "QUEUE");
-    const presentation = await this.presentationForGuild(interaction.guildId);
-    await interaction.reply({
-      embeds: [buildSetupEmbed()],
-      components: buildQueueButtons(presentation),
-    });
+    await interaction.deferReply({ ephemeral: true });
+    await this.guildService.setExclusiveChannel(interaction.guildId, interaction.channelId, "QUEUE");
+    await this.refreshQueueChannels(interaction.guildId);
+    await interaction.editReply("Canal configurado como fila oficial de inhouse.");
+  }
+
+  private async handleSetupRanking(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      return;
+    }
+
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+      await interaction.reply({
+        content: "Apenas administradores podem criar o painel de ranking.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+    await this.guildService.setExclusiveChannel(interaction.guildId, interaction.channelId, "RANKING");
+    await this.refreshRankingChannels(interaction.guildId);
+    await interaction.editReply("Canal configurado como ranking oficial de inhouse.");
   }
 
   private async handleLeaveQueue(interaction: QueueInteraction): Promise<void> {
     if (!interaction.guildId) {
       await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      return;
+    }
+
+    if (!(await this.ensureQueueChannel(interaction))) {
       return;
     }
 
@@ -596,6 +625,10 @@ export class DiscordGateway {
   private async handleRanking(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
       await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      return;
+    }
+
+    if (!(await this.ensureRankingChannel(interaction))) {
       return;
     }
 
@@ -852,8 +885,7 @@ export class DiscordGateway {
     try {
       const account = await riotApiService.getAccountByRiotId(nick, tag);
 
-      // Save to Supabase via riotOAuthService
-      await riotOAuthService["saveRiotAccount"](interaction.user.id, account);
+      await riotOAuthService.saveRiotAccount(interaction.user.id, account);
 
       const { buildLinkSuccessEmbed } = await import("./components.js");
       await interaction.editReply({
@@ -1429,7 +1461,7 @@ export class DiscordGateway {
     
     let tournamentCode: string | undefined;
     try {
-      if (riotApiService.isConfigured) {
+      if (env.RIOT_TOURNAMENT_CODES_ENABLED && riotApiService.isConfigured) {
         tournamentCode = await riotApiService.createTournamentCode(persistedMatch.id, pending.match.teamBlue.length);
       }
     } catch (err) {
@@ -1757,6 +1789,29 @@ export class DiscordGateway {
     return false;
   }
 
+  private async ensureRankingChannel(interaction: ChatInputCommandInteraction): Promise<boolean> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      return false;
+    }
+
+    const markedChannels = await this.guildService.getMarkedChannels(interaction.guildId, "RANKING");
+    if (markedChannels.length === 0) {
+      return true;
+    }
+
+    if (markedChannels.some((channel) => channel.channelId === interaction.channelId)) {
+      return true;
+    }
+
+    const channelList = markedChannels.map((channel) => `<#${channel.channelId}>`).join(", ");
+    await interaction.reply({
+      content: `Use o canal marcado como ranking: ${channelList}.`,
+      ephemeral: true,
+    });
+    return false;
+  }
+
   private roleFromButton(customId: string): Role | null {
     const prefix = "inhouse:join:";
     if (!customId.startsWith(prefix)) {
@@ -1839,11 +1894,6 @@ export class DiscordGateway {
       }
 
       await this.clearManagedMessages(channel, (title) => title.includes("Ranking"));
-      if (entries.length === 0) {
-        await channel.send("Ranking ainda vazio.");
-        continue;
-      }
-
       const sessionId = randomUUID();
       const session: RankingSession = {
         entries,
@@ -1854,7 +1904,7 @@ export class DiscordGateway {
       const totalPages = Math.max(1, Math.ceil(entries.length / RANKING_PAGE_SIZE));
       await channel.send({
         embeds: [buildRankingEmbed(entries, undefined, 0, presentation)],
-        components: buildRankingButtons(sessionId, 0, totalPages),
+        components: entries.length > 0 ? buildRankingButtons(sessionId, 0, totalPages) : [],
       });
     }
   }

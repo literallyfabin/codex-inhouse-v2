@@ -114,7 +114,7 @@ export class RiotOAuthService {
   }
 
   async getRiotAccountForDiscordId(discordId: string): Promise<RiotAccount | null> {
-    const { data, error } = await (supabase as any)
+    const { data, error } = await supabase
       .from("user_riot_accounts")
       .select("puuid, game_name, tag_line")
       .eq("discord_id", discordId)
@@ -133,7 +133,7 @@ export class RiotOAuthService {
   async getRiotAccountsForDiscordIds(discordIds: string[]): Promise<Map<string, RiotAccount>> {
     if (discordIds.length === 0) return new Map();
 
-    const { data, error } = await (supabase as any)
+    const { data, error } = await supabase
       .from("user_riot_accounts")
       .select("discord_id, puuid, game_name, tag_line")
       .in("discord_id", discordIds);
@@ -151,8 +151,8 @@ export class RiotOAuthService {
     return result;
   }
 
-  private async saveRiotAccount(discordId: string, account: RiotAccount): Promise<void> {
-    const { error } = await (supabase as any)
+  async saveRiotAccount(discordId: string, account: RiotAccount): Promise<void> {
+    const { error } = await supabase
       .from("user_riot_accounts")
       .upsert(
         {

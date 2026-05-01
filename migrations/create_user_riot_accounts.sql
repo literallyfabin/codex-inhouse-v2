@@ -1,6 +1,3 @@
--- Migration: Create user_riot_accounts table
--- Run this in the Supabase SQL Editor
-
 CREATE TABLE IF NOT EXISTS public.user_riot_accounts (
   discord_id   TEXT PRIMARY KEY,
   puuid        TEXT NOT NULL UNIQUE,
@@ -12,9 +9,5 @@ CREATE TABLE IF NOT EXISTS public.user_riot_accounts (
 -- Enable Row Level Security (optional but recommended)
 ALTER TABLE public.user_riot_accounts ENABLE ROW LEVEL SECURITY;
 
--- Allow the service role (used by our bot's anon/service key) to read/write
-CREATE POLICY "Service role can manage riot accounts"
-  ON public.user_riot_accounts
-  FOR ALL
-  USING (true)
-  WITH CHECK (true);
+CREATE INDEX IF NOT EXISTS idx_user_riot_accounts_riot_id
+  ON public.user_riot_accounts (LOWER(game_name), LOWER(tag_line));

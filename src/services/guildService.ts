@@ -32,6 +32,21 @@ export class GuildService {
     }
   }
 
+  async setExclusiveChannel(guildId: string, channelId: string, channelType: ChannelType): Promise<void> {
+    await this.markChannel(guildId, channelId, channelType);
+
+    const { error } = await supabase
+      .from("discord_channels")
+      .delete()
+      .eq("guild_id", guildId)
+      .eq("channel_type", channelType)
+      .neq("channel_id", channelId);
+
+    if (error) {
+      throw new Error(`Failed to clear previous ${channelType} channels: ${error.message}`);
+    }
+  }
+
   async unmarkChannel(channelId: string): Promise<void> {
     const { error } = await supabase.from("discord_channels").delete().eq("channel_id", channelId);
 

@@ -1,10 +1,11 @@
 services:
-  - type: worker
+  - type: web
     name: codex-inhouse-v2
     runtime: node
     plan: starter
     buildCommand: npm ci && npm run build
     startCommand: npm run start
+    healthCheckPath: /health
     envVars:
       - key: NODE_VERSION
         value: 20
@@ -16,5 +17,19 @@ services:
         sync: false
       - key: DISCORD_CLIENT_ID
         sync: false
+      - key: DISCORD_GUILD_ID
+        sync: false
       - key: DISCORD_GATEWAY_ENABLED
         value: "true"
+      - key: RIOT_API_KEY
+        sync: false
+      - key: RIOT_TOURNAMENT_CODES_ENABLED
+        value: "false"
+      - key: WEBHOOK_URL
+        sync: false
+      - key: RIOT_CLIENT_ID
+        sync: false
+      - key: RIOT_CLIENT_SECRET
+        sync: false
+      - key: RIOT_VERIFICATION_TOKEN
+        sync: false

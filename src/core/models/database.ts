@@ -36,6 +36,29 @@ export interface Database {
         };
         Relationships: [];
       };
+      user_riot_accounts: {
+        Row: {
+          discord_id: string;
+          puuid: string;
+          game_name: string;
+          tag_line: string;
+          updated_at: string;
+        };
+        Insert: {
+          discord_id: string;
+          puuid: string;
+          game_name: string;
+          tag_line: string;
+          updated_at?: string;
+        };
+        Update: {
+          puuid?: string;
+          game_name?: string;
+          tag_line?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       player_stats: {
         Row: {
           guild_id: string;

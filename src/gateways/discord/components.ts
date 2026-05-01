@@ -157,7 +157,11 @@ const compactMatchId = (matchId: string): string => matchId.slice(0, 8);
 
 export const setupCommand = new SlashCommandBuilder()
   .setName("setup-inhouse")
-  .setDescription("Cria a mensagem persistente da fila de inhouse.");
+  .setDescription("Define este canal como a fila oficial de inhouse.");
+
+export const setupRankingCommand = new SlashCommandBuilder()
+  .setName("setup-ranking")
+  .setDescription("Define este canal como o ranking oficial de inhouse.");
 
 export const queueCommand = new SlashCommandBuilder()
   .setName("queue")
@@ -394,6 +398,7 @@ export const devCreateMatchCommand = new SlashCommandBuilder()
 
 export const discordCommands = [
   setupCommand,
+  setupRankingCommand,
   queueCommand,
   queueStatusCommand,
   leaveQueueCommand,
@@ -1045,4 +1050,3 @@ export const buildAlreadyLinkedEmbed = (gameName: string, tagLine: string): Embe
     .setColor(COLORS.blue)
     .setTitle("🔗 Conta Já Vinculada")
     .setDescription(`Sua conta atual é **${gameName}#${tagLine}**.\n\nSe quiser trocar de conta, use \`/link-account\` novamente.`);
-
