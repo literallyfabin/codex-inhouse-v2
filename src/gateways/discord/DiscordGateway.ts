@@ -4,7 +4,6 @@ import {
   Client,
   Events,
   GatewayIntentBits,
-  PermissionFlagsBits,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Guild,
@@ -291,6 +290,21 @@ export class DiscordGateway {
     }
   }
 
+  private async ensureAdminUser(
+    interaction: ChatInputCommandInteraction,
+    actionDescription = "usar este comando",
+  ): Promise<boolean> {
+    if (env.ADMIN_DISCORD_IDS.includes(interaction.user.id)) {
+      return true;
+    }
+
+    await interaction.reply({
+      content: `Apenas admins liberados podem ${actionDescription}.`,
+      ephemeral: true,
+    });
+    return false;
+  }
+
   private async handleButton(interaction: ButtonInteraction): Promise<void> {
     if (await this.handleRankingButton(interaction)) {
       return;
@@ -338,11 +352,7 @@ export class DiscordGateway {
       return;
     }
 
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      await interaction.reply({
-        content: "Apenas administradores podem criar o painel de inhouse.",
-        ephemeral: true,
-      });
+    if (!(await this.ensureAdminUser(interaction, "criar o painel de inhouse"))) {
       return;
     }
 
@@ -358,11 +368,7 @@ export class DiscordGateway {
       return;
     }
 
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      await interaction.reply({
-        content: "Apenas administradores podem criar o painel de ranking.",
-        ephemeral: true,
-      });
+    if (!(await this.ensureAdminUser(interaction, "criar o painel de ranking"))) {
       return;
     }
 
@@ -399,11 +405,7 @@ export class DiscordGateway {
       return;
     }
 
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      await interaction.reply({
-        content: "Apenas administradores podem registrar resultado.",
-        ephemeral: true,
-      });
+    if (!(await this.ensureAdminUser(interaction, "registrar resultado"))) {
       return;
     }
 
@@ -1078,8 +1080,7 @@ export class DiscordGateway {
       return;
     }
 
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      await interaction.reply({ content: "Apenas administradores podem configurar canais.", ephemeral: true });
+    if (!(await this.ensureAdminUser(interaction, "configurar canais"))) {
       return;
     }
 
@@ -1110,8 +1111,7 @@ export class DiscordGateway {
       return;
     }
 
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      await interaction.reply({ content: "Apenas administradores podem alterar config.", ephemeral: true });
+    if (!(await this.ensureAdminUser(interaction, "alterar config"))) {
       return;
     }
 
@@ -1134,8 +1134,7 @@ export class DiscordGateway {
       return;
     }
 
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      await interaction.reply({ content: "Apenas administradores podem resetar filas.", ephemeral: true });
+    if (!(await this.ensureAdminUser(interaction, "resetar filas"))) {
       return;
     }
 
@@ -1166,8 +1165,7 @@ export class DiscordGateway {
       return;
     }
 
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      await interaction.reply({ content: "Apenas administradores podem cancelar partidas.", ephemeral: true });
+    if (!(await this.ensureAdminUser(interaction, "cancelar partidas"))) {
       return;
     }
 
@@ -1186,8 +1184,7 @@ export class DiscordGateway {
       return;
     }
 
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      await interaction.reply({ content: "Apenas administradores podem registrar resultado.", ephemeral: true });
+    if (!(await this.ensureAdminUser(interaction, "registrar resultado"))) {
       return;
     }
 
@@ -1214,8 +1211,7 @@ export class DiscordGateway {
       return;
     }
 
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      await interaction.reply({ content: "Apenas administradores podem cancelar partidas.", ephemeral: true });
+    if (!(await this.ensureAdminUser(interaction, "cancelar partidas"))) {
       return;
     }
 
@@ -1240,8 +1236,7 @@ export class DiscordGateway {
       return;
     }
 
-    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      await interaction.reply({ content: "Apenas administradores podem criar partidas fake.", ephemeral: true });
+    if (!(await this.ensureAdminUser(interaction, "criar partidas fake"))) {
       return;
     }
 

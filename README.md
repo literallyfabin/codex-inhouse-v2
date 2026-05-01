@@ -53,6 +53,9 @@ Ative apenas quando a aplicacao tiver acesso oficial a codigos de torneio.
 O core nao depende de Discord. O gateway apenas traduz interacoes para chamadas
 em `QueueService`, `UserService`, `MatchService` e `MatchmakingService`.
 
+Comandos de setup, admin e desenvolvimento so podem ser usados pelos Discord IDs
+listados em `ADMIN_DISCORD_IDS` (separados por virgula).
+
 Depois de adicionar ou alterar comandos, rode:
 
 ```bash

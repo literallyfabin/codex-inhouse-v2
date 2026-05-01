@@ -17,6 +17,8 @@ services:
         sync: false
       - key: DISCORD_CLIENT_ID
         sync: false
+      - key: ADMIN_DISCORD_IDS
+        value: "904365027136512021"
       - key: DISCORD_GUILD_ID
         sync: false
       - key: DISCORD_GATEWAY_ENABLED

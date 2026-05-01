@@ -6,12 +6,28 @@ const optionalNonEmptyString = z.preprocess(
   z.string().min(1).optional(),
 );
 
+const discordIdList = z.preprocess((value) => {
+  if (value === undefined || value === "") {
+    return ["904365027136512021"];
+  }
+
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  return value;
+}, z.array(z.string().regex(/^\d+$/)).min(1));
+
 const envSchema = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_KEY: z.string().min(1),
   DISCORD_TOKEN: z.string().min(1),
   DISCORD_CLIENT_ID: optionalNonEmptyString,
   DISCORD_GUILD_ID: optionalNonEmptyString,
+  ADMIN_DISCORD_IDS: discordIdList,
   DISCORD_GATEWAY_ENABLED: z
     .enum(["true", "false"])
     .default("true")
