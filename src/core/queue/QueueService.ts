@@ -84,7 +84,7 @@ export class QueueService {
       role: identity.role,
       duoUserId: identity.duoUserId ?? null,
       readyCheckId: null,
-      joinedAt: existing?.joinedAt ?? identity.joinedAt ?? new Date(),
+      joinedAt: sameRole && existing ? existing.joinedAt : identity.joinedAt ?? new Date(),
     };
 
     const nextQueue = [...nextQueueWithoutEntry, player].sort(
@@ -132,18 +132,23 @@ export class QueueService {
       userIds,
     );
 
-    const players: QueuePlayer[] = identities.map((identity) => ({
-      guildId: identity.guildId,
-      channelId: identity.channelId,
-      userId: identity.userId,
-      platform: identity.platform,
-      platformUserId: identity.platformUserId,
-      displayName: identity.displayName,
-      role: identity.role,
-      duoUserId: identity.duoUserId ?? null,
-      readyCheckId: null,
-      joinedAt: existingByUserId.get(identity.userId)?.joinedAt ?? identity.joinedAt ?? new Date(),
-    }));
+    const players: QueuePlayer[] = identities.map((identity) => {
+      const existing = existingByUserId.get(identity.userId);
+      const sameRole = existing?.role === identity.role;
+
+      return {
+        guildId: identity.guildId,
+        channelId: identity.channelId,
+        userId: identity.userId,
+        platform: identity.platform,
+        platformUserId: identity.platformUserId,
+        displayName: identity.displayName,
+        role: identity.role,
+        duoUserId: identity.duoUserId ?? null,
+        readyCheckId: null,
+        joinedAt: sameRole && existing ? existing.joinedAt : identity.joinedAt ?? new Date(),
+      };
+    });
 
     const nextQueue = [...baseQueue, ...players].sort(
       (left, right) => left.joinedAt.getTime() - right.joinedAt.getTime(),

@@ -124,7 +124,53 @@ describe("QueueService", () => {
     expect(second.snapshot.totalPlayers).toBe(1);
     expect(second.snapshot.roles.TOP).toHaveLength(0);
     expect(second.snapshot.roles.JGL).toHaveLength(1);
-    expect(second.snapshot.roles.JGL[0]?.joinedAt.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+    expect(second.snapshot.roles.JGL[0]?.joinedAt.toISOString()).toBe("2026-01-01T00:01:00.000Z");
+  });
+
+  it("moves a role switcher behind existing players in the target role", () => {
+    const queue = new QueueService();
+    queue.join("channel-1", {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "mid-old",
+      platform: "discord",
+      platformUserId: "mid-old",
+      displayName: "Mid Old",
+      role: "MID",
+      joinedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    for (const [index, userId] of ["adc-1", "adc-2"].entries()) {
+      queue.join("channel-1", {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        userId,
+        platform: "discord",
+        platformUserId: userId,
+        displayName: userId,
+        role: "ADC",
+        joinedAt: new Date(`2026-01-01T00:0${index + 1}:00.000Z`),
+      });
+    }
+
+    const result = queue.join("channel-1", {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "mid-old",
+      platform: "discord",
+      platformUserId: "mid-old",
+      displayName: "Mid Old",
+      role: "ADC",
+      joinedAt: new Date("2026-01-01T00:03:00.000Z"),
+    });
+
+    expect(result.status).toBe("updated");
+    expect(result.snapshot.roles.MID).toHaveLength(0);
+    expect(result.snapshot.roles.ADC.map((player) => player.userId)).toEqual([
+      "adc-1",
+      "adc-2",
+      "mid-old",
+    ]);
   });
 
   it("deduplicates stale loaded queue entries before counting players", () => {
