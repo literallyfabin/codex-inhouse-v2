@@ -8,6 +8,8 @@ import {
   type ChatInputCommandInteraction,
   type Guild,
   type Interaction,
+  type InteractionEditReplyOptions,
+  type InteractionReplyOptions,
   type MessageEditOptions,
   type TextBasedChannel,
 } from "discord.js";
@@ -58,12 +60,14 @@ import {
 
 type PendingValidationAction = "WIN" | "CANCEL";
 type QueueInteraction = ChatInputCommandInteraction | ButtonInteraction;
+type EphemeralResponse = Pick<InteractionReplyOptions, "content" | "embeds" | "components">;
 
 const READY_CHECK_TIMEOUT_MS = 120_000;
 const DUO_INVITE_TIMEOUT_MS = 60_000;
 const MATCHMAKING_QUALITY_THRESHOLD = 0.2;
 const MANAGED_CHANNEL_FETCH_LIMIT = 100;
-const CANCELLED_REQUEUE_PRIORITY_MS = 10 * 60_000;
+const CANCELLED_REQUEUE_WINDOW_MS = 60 * 60_000;
+const CANCELLED_REQUEUE_JUMP_AHEAD_MS = 24 * 60 * 60_000;
 
 interface PendingValidation {
   action: PendingValidationAction;
@@ -336,11 +340,10 @@ export class DiscordGateway {
       return;
     }
 
-    if (!(await this.ensureQueueChannel(interaction))) {
-      return;
-    }
-
     if (interaction.customId === leaveButtonId) {
+      if (!(await this.deferEphemeral(interaction))) {
+        return;
+      }
       await this.handleLeaveQueue(interaction);
       return;
     }
@@ -351,7 +354,13 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
+    if (!(await this.ensureQueueChannel(interaction))) {
+      return;
+    }
+
     await this.joinSinglePlayer(interaction, role);
   }
 
@@ -389,10 +398,13 @@ export class DiscordGateway {
 
   private async handleLeaveQueue(interaction: QueueInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await this.respondEphemeral(interaction, "Use este comando dentro de um servidor.");
       return;
     }
 
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     if (!(await this.ensureQueueChannel(interaction))) {
       return;
     }
@@ -404,7 +416,7 @@ export class DiscordGateway {
     const snapshot = this.queueService.leave(interaction.channelId, user.id);
     await this.queueRepository.removeUserFromChannel(interaction.channelId, user.id);
     const presentation = await this.presentationForGuild(interaction.guildId);
-    await interaction.reply({ embeds: [buildQueueEmbed(snapshot, presentation)], ephemeral: true });
+    await this.respondEphemeral(interaction, { embeds: [buildQueueEmbed(snapshot, presentation)] });
     await this.refreshQueueChannels(interaction.guildId);
   }
 
@@ -514,6 +526,8 @@ export class DiscordGateway {
     });
 
     if (result.player) {
+      // Remove old role entries from DB before upserting the new role (swap behavior)
+      await this.queueRepository.removeUserFromChannel(interaction.channelId, user.id);
       await this.queueRepository.upsertPlayers([result.player]);
     }
 
@@ -555,6 +569,7 @@ export class DiscordGateway {
     }
 
     const inviteId = randomUUID();
+    const joinedAt = this.consumePriorityJoinedAt(requesterUser.id);
     const requester: QueuePlayer = {
       guildId: interaction.guildId,
       channelId: interaction.channelId,
@@ -565,7 +580,7 @@ export class DiscordGateway {
       role: requesterRole,
       duoUserId: targetUser.id,
       readyCheckId: null,
-      joinedAt: this.consumePriorityJoinedAt(requesterUser.id),
+      joinedAt,
     };
     const target: QueuePlayer = {
       guildId: interaction.guildId,
@@ -577,7 +592,7 @@ export class DiscordGateway {
       role: targetRole,
       duoUserId: requesterUser.id,
       readyCheckId: null,
-      joinedAt: this.consumePriorityJoinedAt(targetUser.id),
+      joinedAt,
     };
 
     const pending: PendingDuoInvite = {
@@ -1642,14 +1657,13 @@ export class DiscordGateway {
     channelId: string,
   ): Promise<ReadyCheckCandidate | null> {
     const visibleQueue = this.queueService
-      .getQueuedPlayers()
+      .getMatchmakingQueue(channelId)
       .filter(
         (player) =>
           player.guildId === guildId &&
-          player.channelId === channelId &&
-          !player.readyCheckId,
+          player.channelId === channelId,
       )
-      .sort((left, right) => left.joinedAt.getTime() - right.joinedAt.getTime());
+      ;
 
     if (visibleQueue.length < 10) {
       return null;
@@ -1798,26 +1812,78 @@ export class DiscordGateway {
     return players.map((player) => player.displayName).join(", ");
   }
 
+  private async deferEphemeral(interaction: QueueInteraction): Promise<boolean> {
+    if (interaction.deferred || interaction.replied) {
+      return true;
+    }
+
+    try {
+      await interaction.deferReply({ ephemeral: true });
+      return true;
+    } catch (error) {
+      const code = this.discordErrorCode(error);
+      if (code === 10062 || code === 40060) {
+        console.warn("Discord interaction skipped before queue acknowledgement", {
+          code,
+          customId: interaction.isButton() ? interaction.customId : undefined,
+          commandName: interaction.isChatInputCommand() ? interaction.commandName : undefined,
+        });
+        return false;
+      }
+
+      throw error;
+    }
+  }
+
+  private async respondEphemeral(interaction: QueueInteraction, response: string | EphemeralResponse): Promise<void> {
+    const options: EphemeralResponse = typeof response === "string" ? { content: response } : response;
+    if (interaction.deferred) {
+      await interaction.editReply(options as InteractionEditReplyOptions);
+      return;
+    }
+
+    if (interaction.replied) {
+      await interaction.followUp({ ...options, ephemeral: true });
+      return;
+    }
+
+    await interaction.reply({ ...options, ephemeral: true });
+  }
+
+  private discordErrorCode(error: unknown): number | undefined {
+    if (!error || typeof error !== "object" || !("code" in error)) {
+      return undefined;
+    }
+
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "number" ? code : undefined;
+  }
+
   private consumePriorityJoinedAt(userId: string): Date {
-    const priority = this.cancelledBoosts.get(userId);
-    if (!priority) {
+    const cancelledAt = this.cancelledBoosts.get(userId);
+    if (!cancelledAt) {
       return new Date();
     }
 
     this.cancelledBoosts.delete(userId);
-    return priority;
+    const now = Date.now();
+    if (now - cancelledAt.getTime() >= CANCELLED_REQUEUE_WINDOW_MS) {
+      return new Date(now);
+    }
+
+    return new Date(now - CANCELLED_REQUEUE_JUMP_AHEAD_MS);
   }
 
   private prioritizeCancelledPlayers(userIds: Iterable<string>): void {
-    const priority = new Date(Date.now() - CANCELLED_REQUEUE_PRIORITY_MS);
+    const cancelledAt = new Date();
     for (const userId of userIds) {
-      this.cancelledBoosts.set(userId, priority);
+      this.cancelledBoosts.set(userId, cancelledAt);
     }
   }
 
   private async ensureQueueChannel(interaction: QueueInteraction): Promise<boolean> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await this.respondEphemeral(interaction, "Use este comando dentro de um servidor.");
       return false;
     }
 
@@ -1831,10 +1897,7 @@ export class DiscordGateway {
     }
 
     const channelList = markedChannels.map((channel) => `<#${channel.channelId}>`).join(", ");
-    await interaction.reply({
-      content: `Use um canal marcado como fila: ${channelList}.`,
-      ephemeral: true,
-    });
+    await this.respondEphemeral(interaction, `Use um canal marcado como fila: ${channelList}.`);
     return false;
   }
 

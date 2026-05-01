@@ -30,7 +30,7 @@ export interface QueueJoinResult {
 }
 
 export interface QueueGroupJoinResult {
-  status: "joined" | "role_full";
+  status: "joined";
   players?: QueuePlayer[];
   snapshot: QueueSnapshot;
   matchPlayers?: QueuePlayer[];
@@ -51,6 +51,9 @@ const createEmptyRoles = (): Record<Role, QueuePlayer[]> => ({
   SUP: [],
 });
 
+const queueEntryKey = (player: Pick<QueuePlayer, "userId" | "role">): string =>
+  `${player.userId}:${player.role}`;
+
 export class QueueService {
   private readonly queues = new Map<string, QueuePlayer[]>();
   private readonly events = new EventEmitter();
@@ -67,14 +70,13 @@ export class QueueService {
     identity: QueueIdentity,
   ): QueueJoinResult {
     const queue = this.normalizeQueue(this.queues.get(queueId) ?? []);
-    const existing = queue.find((player) => player.userId === identity.userId);
-    const sameRole = existing?.role === identity.role;
-    const nextQueueWithoutEntry = this.detachDuoLinks(
-      queue.filter((player) => player.userId !== identity.userId),
-      new Set([identity.userId]),
+    const existing = queue.find(
+      (player) => player.userId === identity.userId && player.role === identity.role,
     );
-    const joinedAt =
-      sameRole && existing ? existing.joinedAt : existing ? new Date() : identity.joinedAt ?? new Date();
+    // Remove ALL entries for this user (not just same role) — a player can only hold one role at a time
+    const nextQueueWithoutUser = queue.filter(
+      (player) => player.userId !== identity.userId,
+    );
 
     const player: QueuePlayer = {
       guildId: identity.guildId,
@@ -86,17 +88,17 @@ export class QueueService {
       role: identity.role,
       duoUserId: identity.duoUserId ?? null,
       readyCheckId: null,
-      joinedAt,
+      joinedAt: identity.joinedAt ?? new Date(),
     };
 
-    const nextQueue = [...nextQueueWithoutEntry, player].sort(
+    const nextQueue = [...nextQueueWithoutUser, player].sort(
       (left, right) => left.joinedAt.getTime() - right.joinedAt.getTime(),
     );
     this.queues.set(queueId, nextQueue);
 
     const snapshot = this.snapshot(queueId, nextQueue);
     const matchPlayers = this.selectMatchPlayers(nextQueue);
-    if (snapshot.roles[identity.role].length === 2 && !sameRole) {
+    if ((queue.filter((player) => player.role === identity.role).length < 2) && snapshot.roles[identity.role].length === 2) {
       this.events.emit("roleFilled", { queueId, role: identity.role, snapshot });
     }
 
@@ -105,7 +107,7 @@ export class QueueService {
     }
 
     const joinResult: QueueJoinResult = {
-      status: existing ? (sameRole ? "already_joined" : "updated") : "joined",
+      status: existing ? "updated" : "joined",
       player,
       snapshot,
     };
@@ -128,19 +130,12 @@ export class QueueService {
     }
 
     const currentQueue = this.normalizeQueue(this.queues.get(queueId) ?? []);
-    const existingByUserId = new Map(currentQueue.map((player) => [player.userId, player]));
     const baseQueue = this.detachDuoLinks(
       currentQueue.filter((player) => !userIds.has(player.userId)),
       userIds,
     );
 
-    const players: QueuePlayer[] = identities.map((identity) => {
-      const existing = existingByUserId.get(identity.userId);
-      const sameRole = existing?.role === identity.role;
-      const joinedAt =
-        sameRole && existing ? existing.joinedAt : existing ? new Date() : identity.joinedAt ?? new Date();
-
-      return {
+    const players: QueuePlayer[] = identities.map((identity) => ({
         guildId: identity.guildId,
         channelId: identity.channelId,
         userId: identity.userId,
@@ -150,9 +145,8 @@ export class QueueService {
         role: identity.role,
         duoUserId: identity.duoUserId ?? null,
         readyCheckId: null,
-        joinedAt,
-      };
-    });
+        joinedAt: identity.joinedAt ?? new Date(),
+      }));
 
     const nextQueue = [...baseQueue, ...players].sort(
       (left, right) => left.joinedAt.getTime() - right.joinedAt.getTime(),
@@ -261,6 +255,10 @@ export class QueueService {
     return this.selectMatchPlayers(this.queues.get(queueId) ?? []);
   }
 
+  getMatchmakingQueue(queueId: string): QueuePlayer[] {
+    return this.buildLegacyOrderedQueue(this.queues.get(queueId) ?? []);
+  }
+
   hasActiveReadyCheck(userId: string, guildId?: string): boolean {
     return this.getQueuedPlayers().some(
       (player) =>
@@ -324,7 +322,7 @@ export class QueueService {
 
   snapshot(queueId: string, sourceQueue = this.queues.get(queueId) ?? []): QueueSnapshot {
     const roles = createEmptyRoles();
-    const visibleQueue = this.normalizeQueue(sourceQueue).filter((player) => !player.readyCheckId);
+    const visibleQueue = this.buildLegacyOrderedQueue(sourceQueue);
     for (const role of ROLES) {
       roles[role] = visibleQueue.filter((player) => player.role === role);
     }
@@ -360,21 +358,21 @@ export class QueueService {
   }
 
   private normalizeQueue(queue: readonly QueuePlayer[]): QueuePlayer[] {
-    const byUserId = new Map<string, QueuePlayer>();
+    const byEntry = new Map<string, QueuePlayer>();
     for (const player of queue) {
-      const existing = byUserId.get(player.userId);
+      const existing = byEntry.get(queueEntryKey(player));
       if (!existing || player.joinedAt.getTime() >= existing.joinedAt.getTime()) {
-        byUserId.set(player.userId, player);
+        byEntry.set(queueEntryKey(player), player);
       }
     }
 
-    return [...byUserId.values()].sort(
+    return [...byEntry.values()].sort(
       (left, right) => left.joinedAt.getTime() - right.joinedAt.getTime(),
     );
   }
 
   private selectMatchPlayers(queue: readonly QueuePlayer[]): QueuePlayer[] | undefined {
-    const selectableQueue = this.normalizeQueue(queue).filter((player) => !player.readyCheckId);
+    const selectableQueue = this.buildLegacyOrderedQueue(queue);
     const roles = createEmptyRoles();
     for (const role of ROLES) {
       roles[role] = selectableQueue.filter((player) => player.role === role);
@@ -383,63 +381,117 @@ export class QueueService {
       }
     }
 
-    const selectedByRole = createEmptyRoles();
-    const selectedByUserId = new Map<string, QueuePlayer>();
-    const addSelected = (player: QueuePlayer): boolean => {
-      if (selectedByUserId.has(player.userId)) {
-        return false;
+    for (let poolSize = 10; poolSize <= selectableQueue.length; poolSize += 1) {
+      const pool = selectableQueue.slice(0, poolSize);
+      const rolePairs = ROLES.map((role) => this.twoPlayerCombinations(pool.filter((player) => player.role === role)));
+      if (rolePairs.some((pairs) => pairs.length === 0)) {
+        continue;
       }
 
-      const bucket = selectedByRole[player.role];
-      if (bucket.some((selected) => selected.userId === player.userId)) {
-        return false;
-      }
-
-      if (bucket.length >= 2) {
-        return false;
-      }
-
-      bucket.push(player);
-      selectedByUserId.set(player.userId, player);
-      return true;
-    };
-
-    for (const role of ROLES) {
-      for (const player of roles[role]) {
-        addSelected(player);
-        if (selectedByRole[player.role].length === 2) {
-          break;
+      for (const selected of this.rolePairProducts(rolePairs)) {
+        if (this.isValidMatchSelection(selected)) {
+          return selected;
         }
       }
     }
 
-    let changed = true;
-    let guard = 0;
-    while (changed && guard < queue.length * 2) {
-      guard += 1;
-      changed = false;
-      for (const player of [...selectedByUserId.values()]) {
-        if (!player.duoUserId || selectedByUserId.has(player.duoUserId)) {
+    return undefined;
+  }
+
+  private buildLegacyOrderedQueue(queue: readonly QueuePlayer[]): QueuePlayer[] {
+    const normalizedQueue = this.normalizeQueue(queue);
+    const readyCheckedUserIds = new Set(
+      normalizedQueue.filter((player) => player.readyCheckId).map((player) => player.userId),
+    );
+    const visibleQueue = normalizedQueue.filter((player) => !readyCheckedUserIds.has(player.userId));
+    const byRole = createEmptyRoles();
+    for (const role of ROLES) {
+      byRole[role] = visibleQueue.filter((player) => player.role === role);
+    }
+
+    const startingQueue = createEmptyRoles();
+    for (const role of ROLES) {
+      for (const player of byRole[role]) {
+        if (startingQueue[role].length >= 2) {
           continue;
         }
 
-        const duo = selectableQueue.find((candidate) => candidate.userId === player.duoUserId);
-        if (duo && addSelected(duo)) {
-          changed = true;
+        if (!startingQueue[role].some((queuedPlayer) => queuedPlayer.userId === player.userId)) {
+          startingQueue[role].push(player);
+        }
+
+        if (!player.duoUserId) {
+          continue;
+        }
+
+        const duo = visibleQueue.find(
+          (candidate) =>
+            candidate.userId === player.duoUserId &&
+            candidate.duoUserId === player.userId &&
+            candidate.channelId === player.channelId,
+        );
+        if (!duo) {
+          continue;
+        }
+
+        const duoQueue = startingQueue[duo.role];
+        if (duoQueue.length >= 2) {
+          duoQueue.pop();
+        }
+
+        if (!duoQueue.some((queuedPlayer) => queuedPlayer.userId === duo.userId)) {
+          duoQueue.push(duo);
         }
       }
     }
 
-    const selected = ROLES.flatMap((role) => selectedByRole[role]);
-    const hasValidShape =
-      selected.length === 10 &&
-      new Set(selected.map((player) => player.userId)).size === 10 &&
-      ROLES.every((role) => selectedByRole[role].length === 2);
-    const keepsDuosTogether = selected.every(
-      (player) =>
-        !player.duoUserId || selected.some((candidate) => candidate.userId === player.duoUserId),
-    );
+    const startingPlayers = ROLES.flatMap((role) => startingQueue[role]);
+    const startingKeys = new Set(startingPlayers.map(queueEntryKey));
+    return [
+      ...startingPlayers,
+      ...visibleQueue.filter((player) => !startingKeys.has(queueEntryKey(player))),
+    ];
+  }
 
-    return hasValidShape && keepsDuosTogether ? selected : undefined;
+  private twoPlayerCombinations<T>(items: readonly T[]): [T, T][] {
+    const combinations: [T, T][] = [];
+    for (let leftIndex = 0; leftIndex < items.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < items.length; rightIndex += 1) {
+        const left = items[leftIndex];
+        const right = items[rightIndex];
+        if (left && right) {
+          combinations.push([left, right]);
+        }
+      }
+    }
+
+    return combinations;
+  }
+
+  private rolePairProducts(pairSets: readonly [QueuePlayer, QueuePlayer][][]): QueuePlayer[][] {
+    let products: QueuePlayer[][] = [[]];
+    for (const pairs of pairSets) {
+      const nextProducts: QueuePlayer[][] = [];
+      for (const prefix of products) {
+        for (const pair of pairs) {
+          nextProducts.push([...prefix, ...pair]);
+        }
+      }
+      products = nextProducts;
+    }
+
+    return products;
+  }
+
+  private isValidMatchSelection(players: readonly QueuePlayer[]): boolean {
+    return (
+      players.length === 10 &&
+      new Set(players.map((player) => player.userId)).size === 10 &&
+      ROLES.every((role) => players.filter((player) => player.role === role).length === 2) &&
+      players.every(
+        (player) =>
+          !player.duoUserId || players.some((candidate) => candidate.userId === player.duoUserId),
+      )
+    );
   }
 }

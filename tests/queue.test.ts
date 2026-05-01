@@ -95,9 +95,41 @@ describe("QueueService", () => {
     expect(snapshot.roles.ADC.slice(2).map((player) => player.userId)).toEqual(["adc-3"]);
   });
 
-  it("updates a user's role instead of duplicating the same user in one queue", () => {
+  it("queues the same user in multiple roles like the legacy bot", () => {
     const queue = new QueueService();
     const first = queue.join("channel-1", {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "user-1",
+      platform: "discord",
+      platformUserId: "discord-1",
+      displayName: "Player 1",
+      role: "TOP",
+      joinedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    const second = queue.join("channel-1", {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "user-1",
+      platform: "discord",
+      platformUserId: "discord-1",
+      displayName: "Player 1",
+      role: "JGL",
+      joinedAt: new Date("2026-01-01T00:01:00.000Z"),
+    });
+
+    expect(first.status).toBe("joined");
+    expect(second.status).toBe("joined");
+    expect(second.snapshot.totalPlayers).toBe(2);
+    expect(second.snapshot.roles.TOP).toHaveLength(1);
+    expect(second.snapshot.roles.JGL).toHaveLength(1);
+    expect(second.snapshot.roles.JGL[0]?.joinedAt.toISOString()).toBe("2026-01-01T00:01:00.000Z");
+  });
+
+  it("refreshes the queue time when the same user requeues the same role", () => {
+    const queue = new QueueService();
+    queue.join("channel-1", {
       guildId: "guild-1",
       channelId: "channel-1",
       userId: "user-1",
@@ -111,29 +143,25 @@ describe("QueueService", () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date("2026-01-01T00:01:00.000Z"));
-      const second = queue.join("channel-1", {
+      const result = queue.join("channel-1", {
         guildId: "guild-1",
         channelId: "channel-1",
         userId: "user-1",
         platform: "discord",
         platformUserId: "discord-1",
         displayName: "Player 1",
-        role: "JGL",
-        joinedAt: new Date("2025-01-01T00:00:00.000Z"),
+        role: "TOP",
       });
 
-      expect(first.status).toBe("joined");
-      expect(second.status).toBe("updated");
-      expect(second.snapshot.totalPlayers).toBe(1);
-      expect(second.snapshot.roles.TOP).toHaveLength(0);
-      expect(second.snapshot.roles.JGL).toHaveLength(1);
-      expect(second.snapshot.roles.JGL[0]?.joinedAt.toISOString()).toBe("2026-01-01T00:01:00.000Z");
+      expect(result.status).toBe("updated");
+      expect(result.snapshot.totalPlayers).toBe(1);
+      expect(result.snapshot.roles.TOP[0]?.joinedAt.toISOString()).toBe("2026-01-01T00:01:00.000Z");
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("moves a role switcher behind existing players in the target role", () => {
+  it("adds a second role behind existing players in that role", () => {
     const queue = new QueueService();
     queue.join("channel-1", {
       guildId: "guild-1",
@@ -159,30 +187,24 @@ describe("QueueService", () => {
       });
     }
 
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(new Date("2026-01-01T00:03:00.000Z"));
-      const result = queue.join("channel-1", {
-        guildId: "guild-1",
-        channelId: "channel-1",
-        userId: "mid-old",
-        platform: "discord",
-        platformUserId: "mid-old",
-        displayName: "Mid Old",
-        role: "ADC",
-        joinedAt: new Date("2025-01-01T00:00:00.000Z"),
-      });
+    const result = queue.join("channel-1", {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "mid-old",
+      platform: "discord",
+      platformUserId: "mid-old",
+      displayName: "Mid Old",
+      role: "ADC",
+      joinedAt: new Date("2026-01-01T00:03:00.000Z"),
+    });
 
-      expect(result.status).toBe("updated");
-      expect(result.snapshot.roles.MID).toHaveLength(0);
-      expect(result.snapshot.roles.ADC.map((player) => player.userId)).toEqual([
-        "adc-1",
-        "adc-2",
-        "mid-old",
-      ]);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(result.status).toBe("joined");
+    expect(result.snapshot.roles.MID.map((player) => player.userId)).toEqual(["mid-old"]);
+    expect(result.snapshot.roles.ADC.map((player) => player.userId)).toEqual([
+      "adc-1",
+      "adc-2",
+      "mid-old",
+    ]);
   });
 
   it("deduplicates stale loaded queue entries before counting players", () => {
@@ -205,6 +227,11 @@ describe("QueueService", () => {
       },
       {
         ...basePlayer,
+        role: "TOP",
+        joinedAt: new Date("2026-01-01T00:02:00.000Z"),
+      },
+      {
+        ...basePlayer,
         role: "JGL",
         joinedAt: new Date("2026-01-01T00:01:00.000Z"),
       },
@@ -213,8 +240,9 @@ describe("QueueService", () => {
     queue.loadQueues(loadedPlayers);
     const snapshot = queue.snapshot("channel-1");
 
-    expect(snapshot.totalPlayers).toBe(1);
-    expect(snapshot.roles.TOP).toHaveLength(0);
+    expect(snapshot.totalPlayers).toBe(2);
+    expect(snapshot.roles.TOP).toHaveLength(1);
+    expect(snapshot.roles.TOP[0]?.joinedAt.toISOString()).toBe("2026-01-01T00:02:00.000Z");
     expect(snapshot.roles.JGL).toHaveLength(1);
   });
 
@@ -271,6 +299,53 @@ describe("QueueService", () => {
     expect(result.snapshot.roles.JGL[0]?.duoUserId).toBe("user-1");
   });
 
+  it("moves a required duo into the starting role queue like the legacy GameQueue", () => {
+    const queue = new QueueService();
+    for (const [index, userId] of ["sup-1", "sup-2"].entries()) {
+      queue.join("channel-1", {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        userId,
+        platform: "discord",
+        platformUserId: userId,
+        displayName: userId,
+        role: "SUP",
+        joinedAt: new Date(`2026-01-01T00:0${index}:00.000Z`),
+      });
+    }
+
+    const result = queue.joinGroup("channel-1", [
+      {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        userId: "top-duo",
+        platform: "discord",
+        platformUserId: "top-duo",
+        displayName: "Top Duo",
+        role: "TOP",
+        duoUserId: "sup-duo",
+        joinedAt: new Date("2026-01-01T00:02:00.000Z"),
+      },
+      {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        userId: "sup-duo",
+        platform: "discord",
+        platformUserId: "sup-duo",
+        displayName: "Sup Duo",
+        role: "SUP",
+        duoUserId: "top-duo",
+        joinedAt: new Date("2026-01-01T00:03:00.000Z"),
+      },
+    ]);
+
+    expect(result.snapshot.roles.SUP.map((player) => player.userId)).toEqual([
+      "sup-duo",
+      "sup-1",
+      "sup-2",
+    ]);
+  });
+
   it("marks a ready-check across every queue entry for the same guild user", () => {
     const queue = new QueueService();
     queue.join("channel-1", {
@@ -281,6 +356,15 @@ describe("QueueService", () => {
       platformUserId: "discord-1",
       displayName: "Player 1",
       role: "TOP",
+    });
+    queue.join("channel-1", {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "user-1",
+      platform: "discord",
+      platformUserId: "discord-1",
+      displayName: "Player 1",
+      role: "JGL",
     });
     queue.join("channel-2", {
       guildId: "guild-1",
