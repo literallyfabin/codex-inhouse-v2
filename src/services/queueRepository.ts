@@ -48,7 +48,7 @@ export class QueueRepository {
       return;
     }
 
-    const { error } = await supabase.from("queue_entries").upsert(
+    const { error } = await supabase.from("queue_entries").insert(
       players.map((player) => ({
         guild_id: player.guildId,
         channel_id: player.channelId,
@@ -61,7 +61,6 @@ export class QueueRepository {
         platform: player.platform,
         platform_user_id: player.platformUserId,
       })),
-      { onConflict: "channel_id,user_id,role" },
     );
 
     if (error) {

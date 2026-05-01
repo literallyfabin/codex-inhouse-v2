@@ -814,6 +814,9 @@ export class DiscordGateway {
 
     const result = this.queueService.joinGroup(pending.channelId, [pending.requester, pending.target]);
     if (result.players) {
+      // Remove old entries before inserting new ones (swap behavior)
+      await this.queueRepository.removeUserFromChannel(pending.channelId, pending.requester.userId);
+      await this.queueRepository.removeUserFromChannel(pending.channelId, pending.target.userId);
       await this.queueRepository.upsertPlayers(result.players);
     }
 
