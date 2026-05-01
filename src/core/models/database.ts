@@ -87,6 +87,7 @@ export interface Database {
       matches: {
         Row: {
           id: string;
+          match_number: number;
           guild_id: string;
           status: MatchStatus;
           team_blue: Json;
@@ -101,6 +102,7 @@ export interface Database {
         };
         Insert: {
           id?: string;
+          match_number?: number;
           guild_id: string;
           status?: MatchStatus;
           team_blue: Json;
@@ -114,6 +116,7 @@ export interface Database {
           completed_at?: string | null;
         };
         Update: {
+          match_number?: number;
           status?: MatchStatus;
           winning_team?: WinningTeam;
           discord_message_id?: string | null;

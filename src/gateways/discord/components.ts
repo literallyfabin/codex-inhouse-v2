@@ -15,6 +15,7 @@ import type {
   PlayerRoleSummary,
   RankingEntry,
 } from "../../services/statsService.js";
+import type { MatchSummary } from "../../services/matchService.js";
 
 export const RANKING_PAGE_SIZE = 15;
 
@@ -153,7 +154,19 @@ const tableLine = (values: readonly string[], widths: readonly number[]): string
     .map((value, index) => truncate(value, widths[index] ?? value.length).padEnd(widths[index] ?? value.length))
     .join(" ");
 
-const compactMatchId = (matchId: string): string => matchId.slice(0, 8);
+export const formatMatchCode = (matchNumber?: number | null): string | null =>
+  typeof matchNumber === "number" && Number.isFinite(matchNumber)
+    ? String(matchNumber).padStart(4, "0")
+    : null;
+
+export const formatMatchLabel = (matchNumber?: number | null, matchId?: string): string => {
+  const code = formatMatchCode(matchNumber);
+  if (code) {
+    return `#${code}`;
+  }
+
+  return matchId ? `#${matchId.slice(0, 8)}` : "#----";
+};
 
 export const setupCommand = new SlashCommandBuilder()
   .setName("setup-inhouse")
@@ -197,7 +210,7 @@ export const adminWinCommand = new SlashCommandBuilder()
   .addStringOption((option) =>
     option
       .setName("match_id")
-      .setDescription("ID da partida criada pelo bot.")
+      .setDescription("Numero da partida (#0001) ou UUID.")
       .setRequired(true),
   )
   .addStringOption((option) =>
@@ -246,6 +259,13 @@ export const historyCommand = new SlashCommandBuilder()
       .setMaxValue(20),
   );
 
+export const lastMatchCommand = new SlashCommandBuilder()
+  .setName("ultima-partida")
+  .setDescription("Mostra a ultima partida do servidor ou de um jogador.")
+  .addUserOption((option) =>
+    option.setName("jogador").setDescription("Jogador alvo. Vazio mostra a ultima partida do servidor."),
+  );
+
 export const mmrHistoryCommand = new SlashCommandBuilder()
   .setName("mmr-history")
   .setDescription("Mostra a evolucao de MMR do jogador.")
@@ -273,7 +293,7 @@ export const championCommand = new SlashCommandBuilder()
     option.setName("nome").setDescription("Nome do campeao.").setRequired(true),
   )
   .addStringOption((option) =>
-    option.setName("match_id").setDescription("ID da partida. Vazio usa sua ultima partida."),
+    option.setName("match_id").setDescription("Numero da partida (#0001) ou UUID. Vazio usa sua ultima partida."),
   );
 
 export const wonCommand = new SlashCommandBuilder()
@@ -368,7 +388,7 @@ export const adminCancelCommand = new SlashCommandBuilder()
   .setName("admin-cancel")
   .setDescription("Cancela uma partida ainda nao finalizada.")
   .addStringOption((option) =>
-    option.setName("match_id").setDescription("ID da partida.").setRequired(true),
+    option.setName("match_id").setDescription("Numero da partida (#0001) ou UUID.").setRequired(true),
   );
 
 export const adminWinUserCommand = new SlashCommandBuilder()
@@ -407,6 +427,7 @@ export const discordCommands = [
   rankCommand,
   rankingCommand,
   historyCommand,
+  lastMatchCommand,
   mmrHistoryCommand,
   championCommand,
   wonCommand,
@@ -467,7 +488,7 @@ export const buildReadyCheckButtons = (readyCheckId: string): ActionRowBuilder<B
   new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId(readyAcceptButtonId(readyCheckId))
-      .setLabel("Aceitar partida")
+      .setLabel("Confirmar")
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
       .setCustomId(readyRejectButtonId(readyCheckId))
@@ -572,11 +593,13 @@ export const buildQueueEmbed = (
 
 export const buildMatchEmbed = (
   matchId: string,
+  matchNumber: number | null | undefined,
   match: BalancedMatch,
   presentation?: DiscordPresentation,
   tournamentCode?: string,
 ): EmbedBuilder => {
   const slots = [...match.teamBlue, ...match.teamRed];
+  const matchLabel = formatMatchLabel(matchNumber, matchId);
 
   const renderTeam = (team: Team): string =>
     ROLES.map((role) => {
@@ -584,37 +607,39 @@ export const buildMatchEmbed = (
       return `${roleIcon(role, presentation)} **${slot?.player.displayName ?? "Livre"}**`;
     }).join("\n");
 
-  let description = "Os times foram balanceados e o lobby está montado. Entrem no jogo e boa sorte!\n\n";
+  let description = [
+    `Partida ${matchLabel} confirmada.`,
+    "Lobby pronto. Usem os times abaixo e registrem o resultado ao final.",
+  ].join("\n");
   if (tournamentCode) {
-    description += `🏆 **CÓDIGO DE TORNEIO (Copie e cole no LoL):**\n\`\`\`\n${tournamentCode}\n\`\`\``;
+    description += `\n\n**Codigo de torneio**\n\`\`\`\n${tournamentCode}\n\`\`\``;
   } else {
-    description += `**ID da Partida (Cópia Manual):**\n\`\`\`\n${matchId}\n\`\`\``;
+    description += `\n\n**ID da partida:** \`${matchLabel}\``;
   }
 
   return new EmbedBuilder()
     .setColor(COLORS.green)
-    .setTitle("🚀 Partida Pronta para Jogar!")
+    .setTitle(`Partida ${matchLabel}`)
     .setDescription(description)
-    .setImage("https://media.tenor.com/Zp9TWeBw2EwAAAAC/league-of-legends-lol.gif")
     .addFields(
       {
-        name: "🔵 TIME AZUL",
+        name: "Blue Side",
         value: renderTeam("BLUE"),
         inline: true,
       },
       {
-        name: "🔴 TIME VERMELHO",
+        name: "Red Side",
         value: renderTeam("RED"),
         inline: true,
       },
       {
-        name: "📊 Balanceamento",
-        value: `Probabilidade Blue: **${(match.blueExpectedWinrate * 100).toFixed(1)}%** | Delta MMR: **${match.muDifference.toFixed(2)}**`,
+        name: "Balanceamento",
+        value: `Blue winrate esperado: **${(match.blueExpectedWinrate * 100).toFixed(1)}%** | Delta MMR: **${match.muDifference.toFixed(2)}**`,
         inline: false,
       }
     )
     .setFooter({
-      text: "Que vença o melhor time!",
+      text: `UUID interno: ${matchId}`,
     });
 };
 
@@ -625,47 +650,56 @@ export const buildReadyCheckEmbed = (
   presentation?: DiscordPresentation,
 ): EmbedBuilder => {
   const slots = [...match.teamBlue, ...match.teamRed];
+  const acceptedCount = acceptedUserIds.size;
   const renderTeam = (team: Team): string =>
     ROLES.map((role) => {
       const slot = slots.find((candidate) => candidate.team === team && candidate.role === role);
       const accepted = slot && acceptedUserIds.has(slot.player.userId);
-      const status = accepted ? "✅" : "⏳";
+      const status = accepted ? "`OK`" : "`--`";
       return `${status} ${roleIcon(role, presentation)} **${slot?.player.displayName ?? "Livre"}**`;
     }).join("\n");
+  const pendingPlayers = slots
+    .filter((slot) => !acceptedUserIds.has(slot.player.userId))
+    .map((slot) => `${roleIcon(slot.role, presentation)} ${slot.player.displayName}`)
+    .join("\n");
 
   return new EmbedBuilder()
     .setColor(COLORS.gold)
-    .setTitle("⚔️ Partida Encontrada!")
-    .setDescription("O matchmaking encontrou uma partida. Por favor, confirme sua presença clicando no botão abaixo.")
-    .setThumbnail("https://media.tenor.com/Z1d2xMv4UeYAAAAi/alert-bell.gif")
+    .setTitle("Ready-check")
+    .setDescription(
+      [
+        "Partida encontrada. Confirme para travar o lobby.",
+        `${progressBar(acceptedCount, 10)} **${acceptedCount}/10**`,
+      ].join("\n"),
+    )
     .addFields(
       {
-        name: "Confirmacoes",
-        value: `${acceptedUserIds.size}/10`,
+        name: "Confirmados",
+        value: `${acceptedCount}/10`,
         inline: true,
       },
       {
         name: "Balanceamento",
-        value: `Blue ${(match.blueExpectedWinrate * 100).toFixed(1)}%`,
+        value: `Blue ${(match.blueExpectedWinrate * 100).toFixed(1)}% | Delta ${match.muDifference.toFixed(2)}`,
         inline: true,
       },
       {
-        name: "\u200b", // Empty space to force a new row for the teams
-        value: "\u200b",
-        inline: true,
+        name: "Pendentes",
+        value: pendingPlayers || "Todos confirmaram.",
+        inline: false,
       },
       {
-        name: "🔵 Blue Side",
+        name: "Blue Side",
         value: renderTeam("BLUE"),
         inline: true,
       },
       {
-        name: "🔴 Red Side",
+        name: "Red Side",
         value: renderTeam("RED"),
         inline: true,
       },
     )
-    .setFooter({ text: `ID: ${readyCheckId.slice(0, 8)} | Timeout em 2 minutos` });
+    .setFooter({ text: `Ready-check ${readyCheckId.slice(0, 8)} | Fecha em 2 minutos` });
 };
 
 export const buildDuoInviteEmbed = (params: {
@@ -790,7 +824,7 @@ export const buildHistoryEmbed = (
     const championText = entry.championName ? ` como **${entry.championName}**` : "";
     
     return `${circle} **${resultText}** ${roleIcon(entry.role, presentation)}${championText} • MMR: **${Math.round(entry.mmrBefore)}**\n` +
-           `└ ID: \`${entry.matchId}\``;
+           `└ Partida: \`${formatMatchLabel(entry.matchNumber, entry.matchId)}\``;
   }).join("\n\n");
 
   const embed = new EmbedBuilder()
@@ -799,6 +833,110 @@ export const buildHistoryEmbed = (
     .setDescription(rows || "*Nenhuma partida encontrada.*");
 
   return embed;
+};
+
+const discordTimestamp = (isoDate: string): string => {
+  const time = Date.parse(isoDate);
+  return Number.isFinite(time) ? `<t:${Math.floor(time / 1000)}:f>` : isoDate;
+};
+
+const sortedParticipants = (summary: MatchSummary, team: Team) =>
+  summary.participants
+    .filter((participant) => participant.team === team)
+    .sort((left, right) => ROLES.indexOf(left.role) - ROLES.indexOf(right.role));
+
+const matchStatusLabel = (summary: MatchSummary): string => {
+  if (summary.status === "ONGOING") {
+    return "Em andamento";
+  }
+
+  if (summary.status === "CANCELLED") {
+    return "Cancelada";
+  }
+
+  if (summary.status === "COMPLETED" && summary.winningTeam !== "NONE") {
+    return `Vitoria ${renderTeamName(summary.winningTeam)}`;
+  }
+
+  return "Pendente";
+};
+
+const renderSummaryTeam = (
+  summary: MatchSummary,
+  team: Team,
+  presentation?: DiscordPresentation,
+): string => {
+  const rows = sortedParticipants(summary, team).map((participant) => {
+    const champion = participant.championName ? ` | ${participant.championName}` : "";
+    return `${roleIcon(participant.role, presentation)} **${participant.displayName ?? participant.userId}** - ${Math.round(participant.mmrBefore)} MMR${champion}`;
+  });
+
+  return rows.join("\n") || "Sem jogadores.";
+};
+
+const renderCompactTeam = (
+  summary: MatchSummary,
+  team: Team,
+  presentation?: DiscordPresentation,
+): string =>
+  sortedParticipants(summary, team)
+    .map((participant) => `${roleIcon(participant.role, presentation)} ${participant.displayName ?? participant.userId}`)
+    .join(" | ") || "Sem jogadores";
+
+export const buildMatchSummaryEmbed = (
+  summary: MatchSummary,
+  presentation?: DiscordPresentation,
+): EmbedBuilder => {
+  const matchLabel = formatMatchLabel(summary.matchNumber, summary.id);
+
+  return new EmbedBuilder()
+    .setColor(summary.status === "ONGOING" ? COLORS.green : summary.status === "CANCELLED" ? COLORS.softRed : COLORS.gold)
+    .setTitle(`Ultima partida ${matchLabel}`)
+    .setDescription(`${matchStatusLabel(summary)} | Criada em ${discordTimestamp(summary.createdAt)}`)
+    .addFields(
+      {
+        name: "Blue Side",
+        value: renderSummaryTeam(summary, "BLUE", presentation),
+        inline: true,
+      },
+      {
+        name: "Red Side",
+        value: renderSummaryTeam(summary, "RED", presentation),
+        inline: true,
+      },
+      {
+        name: "Balanceamento",
+        value: `Blue ${(summary.blueExpectedWinrate * 100).toFixed(1)}% | Delta MMR ${summary.muDifference.toFixed(2)}`,
+        inline: false,
+      },
+    )
+    .setFooter({ text: `UUID interno: ${summary.id}` });
+};
+
+export const buildActiveMatchesEmbed = (
+  matches: readonly MatchSummary[],
+  presentation?: DiscordPresentation,
+): EmbedBuilder => {
+  const embed = new EmbedBuilder()
+    .setColor(matches.length > 0 ? COLORS.green : COLORS.slate)
+    .setTitle("Partidas em andamento");
+
+  if (matches.length === 0) {
+    return embed.setDescription("Nenhuma partida em andamento agora.");
+  }
+
+  for (const match of matches) {
+    embed.addFields({
+      name: `${formatMatchLabel(match.matchNumber, match.id)} | ${match.participants.length}/10 jogadores`,
+      value: [
+        `Blue: ${renderCompactTeam(match, "BLUE", presentation)}`,
+        `Red: ${renderCompactTeam(match, "RED", presentation)}`,
+      ].join("\n"),
+      inline: false,
+    });
+  }
+
+  return embed.setFooter({ text: "Use /ultima-partida para ver o detalhe da partida mais recente." });
 };
 
 export const buildMmrHistoryEmbed = (
@@ -863,7 +1001,7 @@ export const buildMmrHistoryEmbed = (
     const recentMatches = rows
       .filter((entry) => !entry.isCurrent)
       .slice(-3)
-      .map((entry) => `\`${compactMatchId(entry.matchId)}\``)
+      .map((entry) => `\`${formatMatchLabel(entry.matchNumber, entry.matchId)}\``)
       .join(", ");
 
     embed.addFields({
@@ -900,6 +1038,7 @@ export const buildMmrHistoryEmbed = (
 
 export const buildValidationEmbed = (params: {
   matchId: string;
+  matchNumber?: number | null;
   action: "WIN" | "CANCEL" | "EXPIRED";
   winningTeam?: Team | undefined;
   accepted: number;
@@ -941,7 +1080,7 @@ export const buildValidationEmbed = (params: {
       },
       {
         name: "ID da Partida",
-        value: `\`${params.matchId.slice(0, 8)}\``,
+        value: `\`${formatMatchLabel(params.matchNumber, params.matchId)}\``,
         inline: true,
       },
     )

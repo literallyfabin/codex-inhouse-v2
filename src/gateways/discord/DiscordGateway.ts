@@ -27,6 +27,7 @@ import { riotOAuthService } from "../../services/riotOAuthService.js";
 import {
   RANKING_PAGE_SIZE,
   ROLE_EMOJI_NAMES,
+  buildActiveMatchesEmbed,
   buildCompareEmbed,
   buildDuoButtons,
   buildDuoInviteEmbed,
@@ -34,6 +35,7 @@ import {
   buildLinkAccountEmbed,
   buildAlreadyLinkedEmbed,
   buildMatchEmbed,
+  buildMatchSummaryEmbed,
   buildMmrHistoryEmbed,
   buildQueueButtons,
   buildQueueEmbed,
@@ -44,6 +46,8 @@ import {
   buildStatsEmbed,
   buildValidationButtons,
   buildValidationEmbed,
+  formatMatchCode,
+  formatMatchLabel,
   leaveButtonId,
   parseDuoButtonId,
   parseRankingButtonId,
@@ -58,12 +62,13 @@ type QueueInteraction = ChatInputCommandInteraction | ButtonInteraction;
 const READY_CHECK_TIMEOUT_MS = 120_000;
 const DUO_INVITE_TIMEOUT_MS = 60_000;
 const MATCHMAKING_QUALITY_THRESHOLD = 0.2;
-const MANAGED_CHANNEL_FETCH_LIMIT = 50;
+const MANAGED_CHANNEL_FETCH_LIMIT = 100;
 const CANCELLED_REQUEUE_PRIORITY_MS = 10 * 60_000;
 
 interface PendingValidation {
   action: PendingValidationAction;
   matchId: string;
+  matchNumber: number | null;
   winningTeam?: Team;
   participantUserIds: Set<string>;
   acceptedUserIds: Set<string>;
@@ -230,6 +235,10 @@ export class DiscordGateway {
 
       case "history":
         await this.handleHistory(interaction);
+        return;
+
+      case "ultima-partida":
+        await this.handleLastMatch(interaction);
         return;
 
       case "mmr-history":
@@ -409,7 +418,7 @@ export class DiscordGateway {
       return;
     }
 
-    const matchId = interaction.options.getString("match_id", true);
+    const matchInput = interaction.options.getString("match_id", true);
     const team = interaction.options.getString("team", true);
     if (!isTeam(team)) {
       await interaction.reply({ content: "Time vencedor invalido.", ephemeral: true });
@@ -417,11 +426,15 @@ export class DiscordGateway {
     }
 
     await interaction.deferReply({ ephemeral: true });
+    const matchId = await this.matchService.resolveMatchId(interaction.guildId, matchInput);
     const matchContext = await this.matchService.getMatchContext(matchId);
     await this.matchService.completeMatch(matchId, team);
-    await this.deleteVoiceChannels(interaction.guild, matchId);
+    await this.deleteVoiceChannels(interaction.guild, matchId, matchContext.matchNumber);
     await this.refreshRankingChannels(matchContext.guildId);
-    await interaction.editReply(`Partida ${matchId} finalizada com vitoria do time ${renderTeamName(team)}.`);
+    await this.refreshQueueChannels(matchContext.guildId);
+    await interaction.editReply(
+      `Partida ${formatMatchLabel(matchContext.matchNumber, matchId)} finalizada com vitoria do time ${renderTeamName(team)}.`,
+    );
   }
 
   private async handleQueueCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -827,6 +840,32 @@ export class DiscordGateway {
     await interaction.editReply({ embeds: [buildHistoryEmbed(target.displayName, history, presentation)] });
   }
 
+  private async handleLastMatch(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+    const target = interaction.options.getUser("jogador");
+    const user = target
+      ? await this.userService.upsertDiscordUser(target.id, target.displayName)
+      : undefined;
+    const summary = await this.matchService.getLatestMatchSummary(interaction.guildId, user?.id);
+
+    if (!summary) {
+      await interaction.editReply(
+        target
+          ? `${target.displayName} ainda nao tem partidas neste servidor.`
+          : "Ainda nao existe partida registrada neste servidor.",
+      );
+      return;
+    }
+
+    const presentation = await this.presentationForGuild(interaction.guildId);
+    await interaction.editReply({ embeds: [buildMatchSummaryEmbed(summary, presentation)] });
+  }
+
   private async handleCompare(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
       await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
@@ -928,7 +967,8 @@ export class DiscordGateway {
 
     await interaction.deferReply({ ephemeral: true });
     const championName = interaction.options.getString("nome", true).trim();
-    const matchId = interaction.options.getString("match_id")?.trim();
+    const matchInput = interaction.options.getString("match_id")?.trim();
+    const matchId = matchInput ? await this.matchService.resolveMatchId(interaction.guildId, matchInput) : undefined;
     const user = await this.userService.upsertDiscordUser(
       interaction.user.id,
       interaction.user.displayName,
@@ -940,7 +980,10 @@ export class DiscordGateway {
       matchId || undefined,
     );
 
-    await interaction.editReply(`Campeao de ${interaction.user.displayName} salvo em ${updatedMatchId}: ${championName}.`);
+    const matchContext = await this.matchService.getMatchContext(updatedMatchId);
+    await interaction.editReply(
+      `Campeao de ${interaction.user.displayName} salvo em ${formatMatchLabel(matchContext.matchNumber, updatedMatchId)}: ${championName}.`,
+    );
   }
 
   private async handleWonCommand(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -977,6 +1020,7 @@ export class DiscordGateway {
     const pendingValidation: PendingValidation = {
       action,
       matchId: match.matchId,
+      matchNumber: match.matchNumber,
       participantUserIds: new Set(match.participantUserIds),
       acceptedUserIds: new Set(),
       requesterDisplayName: interaction.user.displayName,
@@ -1028,7 +1072,7 @@ export class DiscordGateway {
       this.pendingValidations.delete(validationId);
       await interaction.deferUpdate();
       await interaction.message.edit({
-        content: `Validacao da partida ${pending.matchId} recusada por ${interaction.user.displayName}.`,
+        content: `Validacao da partida ${formatMatchLabel(pending.matchNumber, pending.matchId)} recusada por ${interaction.user.displayName}.`,
         components: [],
       });
       return true;
@@ -1054,21 +1098,26 @@ export class DiscordGateway {
         throw new Error("Missing winning team for win validation.");
       }
       await this.matchService.completeMatch(pending.matchId, pending.winningTeam);
-      await this.deleteVoiceChannels(interaction.guild, pending.matchId);
+      await this.deleteVoiceChannels(interaction.guild, pending.matchId, pending.matchNumber);
       if (interaction.guildId) {
         await this.refreshRankingChannels(interaction.guildId);
+        await this.refreshQueueChannels(interaction.guildId);
       }
     } else {
       await this.matchService.cancelMatch(pending.matchId);
       this.prioritizeCancelledPlayers(pending.participantUserIds);
-      await this.deleteVoiceChannels(interaction.guild, pending.matchId);
+      await this.deleteVoiceChannels(interaction.guild, pending.matchId, pending.matchNumber);
+      if (interaction.guildId) {
+        await this.refreshQueueChannels(interaction.guildId);
+      }
     }
 
     this.pendingValidations.delete(validationId);
+    const matchLabel = formatMatchLabel(pending.matchNumber, pending.matchId);
     const actionText =
       pending.action === "WIN"
-        ? `Partida ${pending.matchId} finalizada com vitoria do time ${renderTeamName(pending.winningTeam!)}.`
-        : `Partida ${pending.matchId} cancelada.`;
+        ? `Partida ${matchLabel} finalizada com vitoria do time ${renderTeamName(pending.winningTeam!)}.`
+        : `Partida ${matchLabel} cancelada.`;
     await interaction.message.edit({ content: actionText, embeds: [], components: [] });
     await interaction.followUp({ content: "Validacao concluida.", ephemeral: true });
     return true;
@@ -1169,13 +1218,15 @@ export class DiscordGateway {
       return;
     }
 
-    const matchId = interaction.options.getString("match_id", true);
+    const matchInput = interaction.options.getString("match_id", true);
     await interaction.deferReply({ ephemeral: true });
+    const matchId = await this.matchService.resolveMatchId(interaction.guildId, matchInput);
     const matchContext = await this.matchService.getMatchContext(matchId);
     await this.matchService.cancelMatch(matchId);
     this.prioritizeCancelledPlayers(matchContext.participantUserIds);
-    await this.deleteVoiceChannels(interaction.guild, matchId);
-    await interaction.editReply(`Partida ${matchId} cancelada.`);
+    await this.deleteVoiceChannels(interaction.guild, matchId, matchContext.matchNumber);
+    await this.refreshQueueChannels(matchContext.guildId);
+    await interaction.editReply(`Partida ${formatMatchLabel(matchContext.matchNumber, matchId)} cancelada.`);
   }
 
   private async handleAdminWinUser(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -1198,10 +1249,11 @@ export class DiscordGateway {
     }
 
     await this.matchService.completeMatch(match.matchId, match.team);
-    await this.deleteVoiceChannels(interaction.guild, match.matchId);
+    await this.deleteVoiceChannels(interaction.guild, match.matchId, match.matchNumber);
     await this.refreshRankingChannels(interaction.guildId);
+    await this.refreshQueueChannels(interaction.guildId);
     await interaction.editReply(
-      `Partida ${match.matchId} finalizada com vitoria do time ${renderTeamName(match.team)}.`,
+      `Partida ${formatMatchLabel(match.matchNumber, match.matchId)} finalizada com vitoria do time ${renderTeamName(match.team)}.`,
     );
   }
 
@@ -1226,8 +1278,9 @@ export class DiscordGateway {
 
     await this.matchService.cancelMatch(match.matchId);
     this.prioritizeCancelledPlayers(match.participantUserIds);
-    await this.deleteVoiceChannels(interaction.guild, match.matchId);
-    await interaction.editReply(`Partida ${match.matchId} cancelada.`);
+    await this.deleteVoiceChannels(interaction.guild, match.matchId, match.matchNumber);
+    await this.refreshQueueChannels(interaction.guildId);
+    await interaction.editReply(`Partida ${formatMatchLabel(match.matchNumber, match.matchId)} cancelada.`);
   }
 
   private async handleDevCreateMatch(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -1469,9 +1522,10 @@ export class DiscordGateway {
 
     if (pending.messageId) {
       const presentation = await this.presentationForGuild(pending.guildId);
+      const matchLabel = formatMatchLabel(persistedMatch.matchNumber, persistedMatch.id);
       await this.editManagedMessage(pending.channelId, pending.messageId, {
-        content: `Partida criada: ${persistedMatch.id}`,
-        embeds: [buildMatchEmbed(persistedMatch.id, pending.match, presentation, tournamentCode)],
+        content: `Partida criada: ${matchLabel}`,
+        embeds: [buildMatchEmbed(persistedMatch.id, persistedMatch.matchNumber, pending.match, presentation, tournamentCode)],
         components: [],
       });
       await this.matchService.setDiscordMessageId(persistedMatch.id, pending.messageId);
@@ -1479,9 +1533,9 @@ export class DiscordGateway {
 
     const guild = this.client.guilds.cache.get(pending.guildId);
     if (guild) {
-      await this.createVoiceChannels(guild, persistedMatch.id, pending.match);
-      await this.refreshQueueChannels(pending.guildId);
+      await this.createVoiceChannels(guild, persistedMatch.id, pending.match, persistedMatch.matchNumber);
     }
+    await this.refreshQueueChannels(pending.guildId);
   }
 
   private async cancelReadyCheck(
@@ -1860,15 +1914,21 @@ export class DiscordGateway {
   private async refreshQueueChannels(guildId: string): Promise<void> {
     const channels = await this.guildService.getMarkedChannels(guildId, "QUEUE");
     const presentation = await this.presentationForGuild(guildId);
+    const activeMatches = await this.matchService.getOngoingMatchSummaries(guildId, 5);
     for (const marked of channels) {
       const channel = await this.fetchTextChannel(marked.channelId);
       if (!channel?.isSendable()) {
         continue;
       }
 
-      await this.clearManagedMessages(channel, (title) => title.includes("Fila"));
+      await this.clearManagedMessages(channel, (title) => title.includes("Fila"), {
+        deleteNonBotMessages: true,
+      });
       await channel.send({
-        embeds: [buildQueueEmbed(this.queueService.snapshot(marked.channelId), presentation)],
+        embeds: [
+          buildQueueEmbed(this.queueService.snapshot(marked.channelId), presentation),
+          buildActiveMatchesEmbed(activeMatches, presentation),
+        ],
         components: buildQueueButtons(presentation),
       });
     }
@@ -1888,7 +1948,9 @@ export class DiscordGateway {
         continue;
       }
 
-      await this.clearManagedMessages(channel, (title) => title.includes("Ranking"));
+      await this.clearManagedMessages(channel, (title) => title.includes("Ranking"), {
+        deleteNonBotMessages: true,
+      });
       const sessionId = randomUUID();
       const session: RankingSession = {
         entries,
@@ -1907,6 +1969,7 @@ export class DiscordGateway {
   private async clearManagedMessages(
     channel: TextBasedChannel,
     shouldDeleteTitle: (title: string) => boolean,
+    options: { deleteNonBotMessages?: boolean } = {},
   ): Promise<void> {
     if (!("messages" in channel) || !this.client.user) {
       return;
@@ -1916,6 +1979,10 @@ export class DiscordGateway {
     const deletions = messages
       .filter((message) => {
         if (message.author.id !== this.client.user?.id) {
+          return Boolean(options.deleteNonBotMessages);
+        }
+
+        if (!this.client.user) {
           return false;
         }
 
@@ -1925,6 +1992,22 @@ export class DiscordGateway {
       .map((message) => message.delete().catch(() => undefined));
 
     await Promise.all(deletions);
+  }
+
+  private async cleanupManagedChannels(): Promise<void> {
+    for (const guild of this.client.guilds.cache.values()) {
+      const markedChannels = await this.guildService.getMarkedChannels(guild.id).catch(() => []);
+      for (const marked of markedChannels) {
+        const channel = await this.fetchTextChannel(marked.channelId);
+        if (!channel?.isSendable()) {
+          continue;
+        }
+
+        await this.clearManagedMessages(channel, () => false, {
+          deleteNonBotMessages: true,
+        }).catch(() => undefined);
+      }
+    }
   }
 
   private async editManagedMessage(
@@ -1952,7 +2035,12 @@ export class DiscordGateway {
     return channel;
   }
 
-  private async createVoiceChannels(guild: Guild | null, matchId: string, match: BalancedMatch): Promise<void> {
+  private async createVoiceChannels(
+    guild: Guild | null,
+    matchId: string,
+    match: BalancedMatch,
+    matchNumber?: number | null,
+  ): Promise<void> {
     if (!guild) {
       return;
     }
@@ -1962,7 +2050,7 @@ export class DiscordGateway {
       return;
     }
 
-    const token = this.matchChannelToken(matchId);
+    const token = this.matchChannelToken(matchId, matchNumber);
     const category = await guild.channels.create({
       name: `Inhouse ${token}`,
       type: DiscordChannelType.GuildCategory,
@@ -1987,12 +2075,16 @@ export class DiscordGateway {
     void match;
   }
 
-  private async deleteVoiceChannels(guild: Guild | null, matchId: string): Promise<void> {
+  private async deleteVoiceChannels(
+    guild: Guild | null,
+    matchId: string,
+    matchNumber?: number | null,
+  ): Promise<void> {
     if (!guild) {
       return;
     }
 
-    const token = this.matchChannelToken(matchId);
+    const token = this.matchChannelToken(matchId, matchNumber);
     const channels = await guild.channels.fetch().catch(() => null);
     const allChannels = channels ?? guild.channels.cache;
     const deletions = [...allChannels.values()]
@@ -2002,8 +2094,8 @@ export class DiscordGateway {
     await Promise.all(deletions);
   }
 
-  private matchChannelToken(matchId: string): string {
-    return matchId.slice(0, 8);
+  private matchChannelToken(matchId: string, matchNumber?: number | null): string {
+    return formatMatchCode(matchNumber) ?? matchId.slice(0, 8);
   }
 
   private mentionDiscordUsers(ids: readonly string[]): string {
@@ -2014,6 +2106,8 @@ export class DiscordGateway {
   }
 
   private async runScheduledJobs(): Promise<void> {
+    await this.cleanupManagedChannels();
+
     const now = new Date();
     const hour = String(now.getHours()).padStart(2, "0");
     const minute = String(now.getMinutes()).padStart(2, "0");
@@ -2055,6 +2149,7 @@ export class DiscordGateway {
 
     return buildValidationEmbed({
       matchId: pending.matchId,
+      matchNumber: pending.matchNumber,
       action: pending.action,
       winningTeam: pending.winningTeam,
       accepted: pending.acceptedUserIds.size,

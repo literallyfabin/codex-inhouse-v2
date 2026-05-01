@@ -5,6 +5,7 @@ import { supabase } from "./supabaseClient.js";
 
 interface MatchRow {
   id: string;
+  match_number: number | null;
   guild_id: string;
   status: MatchStatus;
   winning_team: WinningTeam;
@@ -51,6 +52,7 @@ export interface RankingEntry extends PlayerRoleSummary {
 
 export interface HistoryEntry {
   matchId: string;
+  matchNumber: number | null;
   role: Role;
   team: Team;
   result: "WIN" | "LOSS" | "ONGOING" | "CANCELLED" | "UNKNOWN";
@@ -62,6 +64,7 @@ export interface HistoryEntry {
 export interface MmrHistoryEntry {
   role: Role;
   matchId: string;
+  matchNumber: number | null;
   mmr: number;
   createdAt: string;
   isCurrent: boolean;
@@ -204,6 +207,7 @@ export class StatsService {
 
         return {
           matchId: participant.match_id,
+          matchNumber: match.match_number,
           role: participant.role,
           team: participant.team,
           result: this.resultFor(participant, match),
@@ -239,6 +243,7 @@ export class StatsService {
       history.push({
         role: participant.role,
         matchId: participant.match_id,
+        matchNumber: match.match_number,
         mmr: participant.mmr_before,
         createdAt: match.created_at,
         isCurrent: false,
@@ -262,6 +267,7 @@ export class StatsService {
     const currentPoints = stats.map((stat) => ({
       role: stat.role,
       matchId: "current",
+      matchNumber: null,
       mmr: displayMmr(stat),
       createdAt: now,
       isCurrent: true,
@@ -390,7 +396,7 @@ export class StatsService {
 
     const { data, error } = await supabase
       .from("matches")
-      .select("id, guild_id, status, winning_team, created_at, completed_at")
+      .select("id, match_number, guild_id, status, winning_team, created_at, completed_at")
       .eq("guild_id", guildId)
       .in("id", [...new Set(matchIds)]);
 
@@ -404,7 +410,7 @@ export class StatsService {
   private async getCompletedMatches(guildId: string): Promise<Map<string, MatchRow>> {
     const { data, error } = await supabase
       .from("matches")
-      .select("id, guild_id, status, winning_team, created_at, completed_at")
+      .select("id, match_number, guild_id, status, winning_team, created_at, completed_at")
       .eq("guild_id", guildId)
       .eq("status", "COMPLETED");
 

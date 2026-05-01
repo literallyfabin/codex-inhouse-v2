@@ -1,5 +1,6 @@
 import type {
   BalancedMatch,
+  MatchStatus,
   PersistedMatch,
   PlayerRating,
   QueuePlayer,
@@ -37,6 +38,7 @@ const participantPayload = (matchId: string, match: BalancedMatch) =>
 
 const mapPersistedMatch = (row: {
   id: string;
+  match_number: number;
   guild_id: string;
   status: PersistedMatch["status"];
   team_blue: Json;
@@ -48,6 +50,7 @@ const mapPersistedMatch = (row: {
   completed_at: string | null;
 }): PersistedMatch => ({
   id: row.id,
+  matchNumber: row.match_number,
   guildId: row.guild_id,
   status: row.status,
   teamBlue: jsonStringArray(row.team_blue),
@@ -61,14 +64,38 @@ const mapPersistedMatch = (row: {
 
 export interface OngoingMatchForUser {
   matchId: string;
+  matchNumber: number | null;
   team: Team;
   participantUserIds: string[];
 }
 
 export interface MatchContext {
   guildId: string;
+  matchNumber: number | null;
   participantUserIds: string[];
   sourceChannelId: string | null;
+}
+
+export interface MatchParticipantSummary {
+  userId: string;
+  role: Role;
+  team: Team;
+  displayName: string | null;
+  mmrBefore: number;
+  championName: string | null;
+}
+
+export interface MatchSummary {
+  id: string;
+  matchNumber: number | null;
+  guildId: string;
+  status: MatchStatus;
+  winningTeam: WinningTeam;
+  createdAt: string;
+  completedAt: string | null;
+  blueExpectedWinrate: number;
+  muDifference: number;
+  participants: MatchParticipantSummary[];
 }
 
 export class MatchService {
@@ -164,7 +191,7 @@ export class MatchService {
         source_channel_id: match.teamBlue[0]?.player.channelId ?? null,
       })
       .select(
-        "id, guild_id, status, team_blue, team_red, winning_team, blue_expected_winrate, mu_difference, created_at, completed_at",
+        "id, match_number, guild_id, status, team_blue, team_red, winning_team, blue_expected_winrate, mu_difference, created_at, completed_at",
       )
       .single();
 
@@ -277,7 +304,7 @@ export class MatchService {
   async getMatchContext(matchId: string): Promise<MatchContext> {
     const { data: matchRow, error: matchError } = await supabase
       .from("matches")
-      .select("guild_id, source_channel_id")
+      .select("guild_id, match_number, source_channel_id")
       .eq("id", matchId)
       .single();
 
@@ -296,6 +323,7 @@ export class MatchService {
 
     return {
       guildId: matchRow.guild_id,
+      matchNumber: matchRow.match_number,
       participantUserIds: participantRows.map((row) => row.user_id),
       sourceChannelId: matchRow.source_channel_id,
     };
@@ -378,7 +406,7 @@ export class MatchService {
 
     const { data: matchRows, error: matchLoadError } = await supabase
       .from("matches")
-      .select("id")
+      .select("id, match_number")
       .eq("guild_id", guildId)
       .eq("status", "ONGOING")
       .in("id", matchIds)
@@ -393,6 +421,7 @@ export class MatchService {
     if (!matchId) {
       return null;
     }
+    const matchNumber = matchRows[0]?.match_number ?? null;
 
     const { data: participantRows, error: participantsError } = await supabase
       .from("match_participants")
@@ -410,9 +439,115 @@ export class MatchService {
 
     return {
       matchId,
+      matchNumber,
       team: requesterParticipant.team,
       participantUserIds: participantRows.map((row) => row.user_id),
     };
+  }
+
+  async resolveMatchId(guildId: string, identifier: string): Promise<string> {
+    const value = identifier.trim();
+    const numericValue = value.replace(/^#/, "");
+
+    if (/^\d+$/.test(numericValue)) {
+      const matchNumber = Number.parseInt(numericValue, 10);
+      if (!Number.isSafeInteger(matchNumber) || matchNumber <= 0) {
+        throw new Error("Invalid match number.");
+      }
+
+      const { data, error } = await supabase
+        .from("matches")
+        .select("id")
+        .eq("guild_id", guildId)
+        .eq("match_number", matchNumber)
+        .maybeSingle();
+
+      if (error) {
+        throw new Error(`Failed to resolve match number: ${error.message}`);
+      }
+
+      if (!data) {
+        throw new Error(`Match #${numericValue.padStart(4, "0")} was not found in this guild.`);
+      }
+
+      return data.id;
+    }
+
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+      throw new Error("Use a match number like #0001 or the full UUID.");
+    }
+
+    const { data, error } = await supabase
+      .from("matches")
+      .select("id")
+      .eq("guild_id", guildId)
+      .eq("id", value)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to resolve match id: ${error.message}`);
+    }
+
+    if (!data) {
+      throw new Error("Match was not found in this guild.");
+    }
+
+    return data.id;
+  }
+
+  async getOngoingMatchSummaries(guildId: string, limit = 5): Promise<MatchSummary[]> {
+    const { data, error } = await supabase
+      .from("matches")
+      .select("id, match_number, guild_id, status, winning_team, blue_expected_winrate, mu_difference, created_at, completed_at")
+      .eq("guild_id", guildId)
+      .eq("status", "ONGOING")
+      .order("match_number", { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      throw new Error(`Failed to load ongoing matches: ${error.message}`);
+    }
+
+    return this.withParticipantSummaries(data);
+  }
+
+  async getLatestMatchSummary(guildId: string, userId?: string): Promise<MatchSummary | null> {
+    let matchIds: string[] | undefined;
+
+    if (userId) {
+      const { data: participantRows, error: participantError } = await supabase
+        .from("match_participants")
+        .select("match_id")
+        .eq("user_id", userId);
+
+      if (participantError) {
+        throw new Error(`Failed to load user matches: ${participantError.message}`);
+      }
+
+      matchIds = [...new Set(participantRows.map((row) => row.match_id))];
+      if (matchIds.length === 0) {
+        return null;
+      }
+    }
+
+    let query = supabase
+      .from("matches")
+      .select("id, match_number, guild_id, status, winning_team, blue_expected_winrate, mu_difference, created_at, completed_at")
+      .eq("guild_id", guildId)
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (matchIds) {
+      query = query.in("id", matchIds);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw new Error(`Failed to load latest match: ${error.message}`);
+    }
+
+    const summaries = await this.withParticipantSummaries(data);
+    return summaries[0] ?? null;
   }
 
   private rebuildBalancedMatch(
@@ -462,5 +597,66 @@ export class MatchService {
 
   private ratingKey(userId: string, role: Role): string {
     return `${userId}:${role}`;
+  }
+
+  private async withParticipantSummaries(
+    rows: readonly {
+      id: string;
+      match_number: number | null;
+      guild_id: string;
+      status: MatchStatus;
+      winning_team: WinningTeam;
+      blue_expected_winrate: number;
+      mu_difference: number;
+      created_at: string;
+      completed_at: string | null;
+    }[],
+  ): Promise<MatchSummary[]> {
+    const participantMap = await this.getParticipantSummariesByMatchIds(rows.map((row) => row.id));
+    return rows.map((row) => ({
+      id: row.id,
+      matchNumber: row.match_number,
+      guildId: row.guild_id,
+      status: row.status,
+      winningTeam: row.winning_team,
+      createdAt: row.created_at,
+      completedAt: row.completed_at,
+      blueExpectedWinrate: row.blue_expected_winrate,
+      muDifference: row.mu_difference,
+      participants: participantMap.get(row.id) ?? [],
+    }));
+  }
+
+  private async getParticipantSummariesByMatchIds(
+    matchIds: readonly string[],
+  ): Promise<Map<string, MatchParticipantSummary[]>> {
+    if (matchIds.length === 0) {
+      return new Map();
+    }
+
+    const { data, error } = await supabase
+      .from("match_participants")
+      .select("match_id, user_id, role, team, display_name, mmr_before, champion_name")
+      .in("match_id", [...new Set(matchIds)]);
+
+    if (error) {
+      throw new Error(`Failed to load match participants: ${error.message}`);
+    }
+
+    const byMatch = new Map<string, MatchParticipantSummary[]>();
+    for (const row of data) {
+      const entries = byMatch.get(row.match_id) ?? [];
+      entries.push({
+        userId: row.user_id,
+        role: row.role,
+        team: row.team,
+        displayName: row.display_name,
+        mmrBefore: row.mmr_before,
+        championName: row.champion_name,
+      });
+      byMatch.set(row.match_id, entries);
+    }
+
+    return byMatch;
   }
 }

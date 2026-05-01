@@ -53,6 +53,7 @@ export interface BalancedMatch {
 
 export interface PersistedMatch {
   id: string;
+  matchNumber: number;
   guildId: string;
   status: MatchStatus;
   teamBlue: string[];
