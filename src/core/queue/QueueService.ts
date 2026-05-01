@@ -66,13 +66,12 @@ export class QueueService {
     queueId: string,
     identity: QueueIdentity,
   ): QueueJoinResult {
-    const queue = this.queues.get(queueId) ?? [];
-    const existing = queue.find(
-      (player) => player.userId === identity.userId && player.role === identity.role,
-    );
+    const queue = this.normalizeQueue(this.queues.get(queueId) ?? []);
+    const existing = queue.find((player) => player.userId === identity.userId);
     const sameRole = existing?.role === identity.role;
-    const nextQueueWithoutEntry = queue.filter(
-      (player) => !(player.userId === identity.userId && player.role === identity.role),
+    const nextQueueWithoutEntry = this.detachDuoLinks(
+      queue.filter((player) => player.userId !== identity.userId),
+      new Set([identity.userId]),
     );
 
     const player: QueuePlayer = {
@@ -85,7 +84,7 @@ export class QueueService {
       role: identity.role,
       duoUserId: identity.duoUserId ?? null,
       readyCheckId: null,
-      joinedAt: identity.joinedAt ?? existing?.joinedAt ?? new Date(),
+      joinedAt: existing?.joinedAt ?? identity.joinedAt ?? new Date(),
     };
 
     const nextQueue = [...nextQueueWithoutEntry, player].sort(
@@ -126,7 +125,7 @@ export class QueueService {
       throw new Error("Queue group requires unique users.");
     }
 
-    const currentQueue = this.queues.get(queueId) ?? [];
+    const currentQueue = this.normalizeQueue(this.queues.get(queueId) ?? []);
     const existingByUserId = new Map(currentQueue.map((player) => [player.userId, player]));
     const baseQueue = this.detachDuoLinks(
       currentQueue.filter((player) => !userIds.has(player.userId)),
@@ -230,11 +229,11 @@ export class QueueService {
   loadQueues(players: readonly QueuePlayer[]): void {
     this.queues.clear();
     for (const player of players) {
-      const queue = this.queues.get(player.channelId) ?? [];
+      const queue = this.normalizeQueue(this.queues.get(player.channelId) ?? []);
       queue.push(player);
       this.queues.set(
         player.channelId,
-        queue.sort((left, right) => left.joinedAt.getTime() - right.joinedAt.getTime()),
+        this.normalizeQueue(queue),
       );
     }
   }
@@ -316,7 +315,7 @@ export class QueueService {
 
   snapshot(queueId: string, sourceQueue = this.queues.get(queueId) ?? []): QueueSnapshot {
     const roles = createEmptyRoles();
-    const visibleQueue = sourceQueue.filter((player) => !player.readyCheckId);
+    const visibleQueue = this.normalizeQueue(sourceQueue).filter((player) => !player.readyCheckId);
     for (const role of ROLES) {
       roles[role] = visibleQueue.filter((player) => player.role === role);
     }
@@ -351,8 +350,22 @@ export class QueueService {
     );
   }
 
+  private normalizeQueue(queue: readonly QueuePlayer[]): QueuePlayer[] {
+    const byUserId = new Map<string, QueuePlayer>();
+    for (const player of queue) {
+      const existing = byUserId.get(player.userId);
+      if (!existing || player.joinedAt.getTime() >= existing.joinedAt.getTime()) {
+        byUserId.set(player.userId, player);
+      }
+    }
+
+    return [...byUserId.values()].sort(
+      (left, right) => left.joinedAt.getTime() - right.joinedAt.getTime(),
+    );
+  }
+
   private selectMatchPlayers(queue: readonly QueuePlayer[]): QueuePlayer[] | undefined {
-    const selectableQueue = queue.filter((player) => !player.readyCheckId);
+    const selectableQueue = this.normalizeQueue(queue).filter((player) => !player.readyCheckId);
     const roles = createEmptyRoles();
     for (const role of ROLES) {
       roles[role] = selectableQueue.filter((player) => player.role === role);

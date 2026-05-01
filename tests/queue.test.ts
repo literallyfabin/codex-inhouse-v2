@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { QueueService } from "../src/core/queue/QueueService.js";
-import type { Role } from "../src/core/models/types.js";
+import type { QueuePlayer, Role } from "../src/core/models/types.js";
 import { ROLES } from "../src/core/models/types.js";
 
 describe("QueueService", () => {
@@ -57,6 +57,71 @@ describe("QueueService", () => {
     expect(result.status).toBe("joined");
     expect(result.snapshot.totalPlayers).toBe(3);
     expect(result.snapshot.roles.TOP).toHaveLength(3);
+  });
+
+  it("updates a user's role instead of duplicating the same user in one queue", () => {
+    const queue = new QueueService();
+    const first = queue.join("channel-1", {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "user-1",
+      platform: "discord",
+      platformUserId: "discord-1",
+      displayName: "Player 1",
+      role: "TOP",
+      joinedAt: new Date("2026-01-01T00:00:00.000Z"),
+    });
+
+    const second = queue.join("channel-1", {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "user-1",
+      platform: "discord",
+      platformUserId: "discord-1",
+      displayName: "Player 1",
+      role: "JGL",
+      joinedAt: new Date("2026-01-01T00:01:00.000Z"),
+    });
+
+    expect(first.status).toBe("joined");
+    expect(second.status).toBe("updated");
+    expect(second.snapshot.totalPlayers).toBe(1);
+    expect(second.snapshot.roles.TOP).toHaveLength(0);
+    expect(second.snapshot.roles.JGL).toHaveLength(1);
+    expect(second.snapshot.roles.JGL[0]?.joinedAt.toISOString()).toBe("2026-01-01T00:00:00.000Z");
+  });
+
+  it("deduplicates stale loaded queue entries before counting players", () => {
+    const queue = new QueueService();
+    const basePlayer = {
+      guildId: "guild-1",
+      channelId: "channel-1",
+      userId: "user-1",
+      platform: "discord" as const,
+      platformUserId: "discord-1",
+      displayName: "Player 1",
+      duoUserId: null,
+      readyCheckId: null,
+    };
+    const loadedPlayers: QueuePlayer[] = [
+      {
+        ...basePlayer,
+        role: "TOP",
+        joinedAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+      {
+        ...basePlayer,
+        role: "JGL",
+        joinedAt: new Date("2026-01-01T00:01:00.000Z"),
+      },
+    ];
+
+    queue.loadQueues(loadedPlayers);
+    const snapshot = queue.snapshot("channel-1");
+
+    expect(snapshot.totalPlayers).toBe(1);
+    expect(snapshot.roles.TOP).toHaveLength(0);
+    expect(snapshot.roles.JGL).toHaveLength(1);
   });
 
   it("selects only 10 players for a match when a role has extras", () => {

@@ -61,7 +61,7 @@ export class QueueRepository {
         platform: player.platform,
         platform_user_id: player.platformUserId,
       })),
-      { onConflict: "channel_id,user_id,role" },
+      { onConflict: "channel_id,user_id" },
     );
 
     if (error) {

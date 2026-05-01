@@ -130,7 +130,9 @@ const roleIcon = (role: Role, presentation?: DiscordPresentation): string =>
 const roleTitle = (role: Role, presentation?: DiscordPresentation): string =>
   `${roleIcon(role, presentation)} ${roleName[role]}`;
 
-const playerLabel = (name?: string): string => (name && name.length > 0 ? name : "Livre");
+const EMPTY_SLOT_LABEL = "--";
+
+const playerLabel = (name?: string): string => (name && name.length > 0 ? name : EMPTY_SLOT_LABEL);
 
 const progressBar = (value: number, total: number): string => {
   const size = 10;
@@ -604,7 +606,7 @@ export const buildMatchEmbed = (
   const renderTeam = (team: Team): string =>
     ROLES.map((role) => {
       const slot = slots.find((s) => s.team === team && s.role === role);
-      return `${roleIcon(role, presentation)} **${slot?.player.displayName ?? "Livre"}**`;
+      return `${roleIcon(role, presentation)} ${slot ? `**${slot.player.displayName}**` : EMPTY_SLOT_LABEL}`;
     }).join("\n");
 
   let description = [
@@ -656,7 +658,7 @@ export const buildReadyCheckEmbed = (
       const slot = slots.find((candidate) => candidate.team === team && candidate.role === role);
       const accepted = slot && acceptedUserIds.has(slot.player.userId);
       const status = accepted ? "`OK`" : "`--`";
-      return `${status} ${roleIcon(role, presentation)} **${slot?.player.displayName ?? "Livre"}**`;
+      return `${status} ${roleIcon(role, presentation)} ${slot ? `**${slot.player.displayName}**` : EMPTY_SLOT_LABEL}`;
     }).join("\n");
   const pendingPlayers = slots
     .filter((slot) => !acceptedUserIds.has(slot.player.userId))
