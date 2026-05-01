@@ -73,6 +73,8 @@ export class QueueService {
       queue.filter((player) => player.userId !== identity.userId),
       new Set([identity.userId]),
     );
+    const joinedAt =
+      sameRole && existing ? existing.joinedAt : existing ? new Date() : identity.joinedAt ?? new Date();
 
     const player: QueuePlayer = {
       guildId: identity.guildId,
@@ -84,7 +86,7 @@ export class QueueService {
       role: identity.role,
       duoUserId: identity.duoUserId ?? null,
       readyCheckId: null,
-      joinedAt: sameRole && existing ? existing.joinedAt : identity.joinedAt ?? new Date(),
+      joinedAt,
     };
 
     const nextQueue = [...nextQueueWithoutEntry, player].sort(
@@ -135,6 +137,8 @@ export class QueueService {
     const players: QueuePlayer[] = identities.map((identity) => {
       const existing = existingByUserId.get(identity.userId);
       const sameRole = existing?.role === identity.role;
+      const joinedAt =
+        sameRole && existing ? existing.joinedAt : existing ? new Date() : identity.joinedAt ?? new Date();
 
       return {
         guildId: identity.guildId,
@@ -146,7 +150,7 @@ export class QueueService {
         role: identity.role,
         duoUserId: identity.duoUserId ?? null,
         readyCheckId: null,
-        joinedAt: sameRole && existing ? existing.joinedAt : identity.joinedAt ?? new Date(),
+        joinedAt,
       };
     });
 

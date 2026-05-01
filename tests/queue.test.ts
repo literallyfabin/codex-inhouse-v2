@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { QueueService } from "../src/core/queue/QueueService.js";
 import type { QueuePlayer, Role } from "../src/core/models/types.js";
 import { ROLES } from "../src/core/models/types.js";
@@ -108,23 +108,29 @@ describe("QueueService", () => {
       joinedAt: new Date("2026-01-01T00:00:00.000Z"),
     });
 
-    const second = queue.join("channel-1", {
-      guildId: "guild-1",
-      channelId: "channel-1",
-      userId: "user-1",
-      platform: "discord",
-      platformUserId: "discord-1",
-      displayName: "Player 1",
-      role: "JGL",
-      joinedAt: new Date("2026-01-01T00:01:00.000Z"),
-    });
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:01:00.000Z"));
+      const second = queue.join("channel-1", {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        userId: "user-1",
+        platform: "discord",
+        platformUserId: "discord-1",
+        displayName: "Player 1",
+        role: "JGL",
+        joinedAt: new Date("2025-01-01T00:00:00.000Z"),
+      });
 
-    expect(first.status).toBe("joined");
-    expect(second.status).toBe("updated");
-    expect(second.snapshot.totalPlayers).toBe(1);
-    expect(second.snapshot.roles.TOP).toHaveLength(0);
-    expect(second.snapshot.roles.JGL).toHaveLength(1);
-    expect(second.snapshot.roles.JGL[0]?.joinedAt.toISOString()).toBe("2026-01-01T00:01:00.000Z");
+      expect(first.status).toBe("joined");
+      expect(second.status).toBe("updated");
+      expect(second.snapshot.totalPlayers).toBe(1);
+      expect(second.snapshot.roles.TOP).toHaveLength(0);
+      expect(second.snapshot.roles.JGL).toHaveLength(1);
+      expect(second.snapshot.roles.JGL[0]?.joinedAt.toISOString()).toBe("2026-01-01T00:01:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("moves a role switcher behind existing players in the target role", () => {
@@ -153,24 +159,30 @@ describe("QueueService", () => {
       });
     }
 
-    const result = queue.join("channel-1", {
-      guildId: "guild-1",
-      channelId: "channel-1",
-      userId: "mid-old",
-      platform: "discord",
-      platformUserId: "mid-old",
-      displayName: "Mid Old",
-      role: "ADC",
-      joinedAt: new Date("2026-01-01T00:03:00.000Z"),
-    });
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:03:00.000Z"));
+      const result = queue.join("channel-1", {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        userId: "mid-old",
+        platform: "discord",
+        platformUserId: "mid-old",
+        displayName: "Mid Old",
+        role: "ADC",
+        joinedAt: new Date("2025-01-01T00:00:00.000Z"),
+      });
 
-    expect(result.status).toBe("updated");
-    expect(result.snapshot.roles.MID).toHaveLength(0);
-    expect(result.snapshot.roles.ADC.map((player) => player.userId)).toEqual([
-      "adc-1",
-      "adc-2",
-      "mid-old",
-    ]);
+      expect(result.status).toBe("updated");
+      expect(result.snapshot.roles.MID).toHaveLength(0);
+      expect(result.snapshot.roles.ADC.map((player) => player.userId)).toEqual([
+        "adc-1",
+        "adc-2",
+        "mid-old",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("deduplicates stale loaded queue entries before counting players", () => {
