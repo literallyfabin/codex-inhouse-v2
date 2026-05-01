@@ -1990,11 +1990,13 @@ export class DiscordGateway {
       await this.clearManagedMessages(channel, (title) => title.includes("Fila"), {
         deleteNonBotMessages: true,
       });
+      const embeds = [buildQueueEmbed(this.queueService.snapshot(marked.channelId), presentation)];
+      const activeMatchesEmbed = buildActiveMatchesEmbed(activeMatches, presentation);
+      if (activeMatchesEmbed) {
+        embeds.push(activeMatchesEmbed);
+      }
       await channel.send({
-        embeds: [
-          buildQueueEmbed(this.queueService.snapshot(marked.channelId), presentation),
-          buildActiveMatchesEmbed(activeMatches, presentation),
-        ],
+        embeds,
         components: buildQueueButtons(presentation),
       });
     }

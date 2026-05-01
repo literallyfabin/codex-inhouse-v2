@@ -918,27 +918,27 @@ export const buildMatchSummaryEmbed = (
 export const buildActiveMatchesEmbed = (
   matches: readonly MatchSummary[],
   presentation?: DiscordPresentation,
-): EmbedBuilder => {
-  const embed = new EmbedBuilder()
-    .setColor(matches.length > 0 ? COLORS.green : COLORS.slate)
-    .setTitle("Partidas em andamento");
-
+): EmbedBuilder | null => {
   if (matches.length === 0) {
-    return embed.setDescription("Nenhuma partida em andamento agora.");
+    return null;
   }
+
+  const embed = new EmbedBuilder()
+    .setColor(COLORS.green)
+    .setTitle(`⚔️ ${matches.length} partida${matches.length > 1 ? "s" : ""} em andamento`);
 
   for (const match of matches) {
     embed.addFields({
-      name: `${formatMatchLabel(match.matchNumber, match.id)} | ${match.participants.length}/10 jogadores`,
+      name: formatMatchLabel(match.matchNumber, match.id),
       value: [
-        `Blue: ${renderCompactTeam(match, "BLUE", presentation)}`,
-        `Red: ${renderCompactTeam(match, "RED", presentation)}`,
+        `🔵 ${renderCompactTeam(match, "BLUE", presentation)}`,
+        `🔴 ${renderCompactTeam(match, "RED", presentation)}`,
       ].join("\n"),
       inline: false,
     });
   }
 
-  return embed.setFooter({ text: "Use /ultima-partida para ver o detalhe da partida mais recente." });
+  return embed;
 };
 
 export const buildMmrHistoryEmbed = (
