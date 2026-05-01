@@ -57,6 +57,42 @@ describe("QueueService", () => {
     expect(result.status).toBe("joined");
     expect(result.snapshot.totalPlayers).toBe(3);
     expect(result.snapshot.roles.TOP).toHaveLength(3);
+    expect(result.snapshot.roles.TOP.map((player) => player.userId)).toEqual([
+      "user-0",
+      "user-1",
+      "user-3",
+    ]);
+  });
+
+  it("does not replace older visible slots when a third player joins the same role", () => {
+    const queue = new QueueService();
+    const players = [
+      { id: "adc-1", joinedAt: "2026-01-01T00:00:00.000Z" },
+      { id: "adc-2", joinedAt: "2026-01-01T00:01:00.000Z" },
+      { id: "adc-3", joinedAt: "2026-01-01T00:02:00.000Z" },
+    ];
+
+    let adcOrder: string[] = [];
+
+    for (const player of players) {
+      const result = queue.join("channel-1", {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        userId: player.id,
+        platform: "discord",
+        platformUserId: player.id,
+        displayName: player.id,
+        role: "ADC",
+        joinedAt: new Date(player.joinedAt),
+      });
+      adcOrder = result.snapshot.roles.ADC.map((entry) => entry.userId);
+    }
+
+    const snapshot = queue.snapshot("channel-1");
+
+    expect(adcOrder).toEqual(["adc-1", "adc-2", "adc-3"]);
+    expect(snapshot.roles.ADC.slice(0, 2).map((player) => player.userId)).toEqual(["adc-1", "adc-2"]);
+    expect(snapshot.roles.ADC.slice(2).map((player) => player.userId)).toEqual(["adc-3"]);
   });
 
   it("updates a user's role instead of duplicating the same user in one queue", () => {

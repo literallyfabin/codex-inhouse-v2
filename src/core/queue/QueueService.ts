@@ -142,7 +142,7 @@ export class QueueService {
       role: identity.role,
       duoUserId: identity.duoUserId ?? null,
       readyCheckId: null,
-      joinedAt: identity.joinedAt ?? existingByUserId.get(identity.userId)?.joinedAt ?? new Date(),
+      joinedAt: existingByUserId.get(identity.userId)?.joinedAt ?? identity.joinedAt ?? new Date(),
     }));
 
     const nextQueue = [...baseQueue, ...players].sort(
@@ -376,25 +376,23 @@ export class QueueService {
 
     const selectedByRole = createEmptyRoles();
     const selectedByUserId = new Map<string, QueuePlayer>();
-    const addSelected = (player: QueuePlayer): void => {
+    const addSelected = (player: QueuePlayer): boolean => {
       if (selectedByUserId.has(player.userId)) {
-        return;
+        return false;
       }
 
       const bucket = selectedByRole[player.role];
       if (bucket.some((selected) => selected.userId === player.userId)) {
-        return;
+        return false;
       }
 
       if (bucket.length >= 2) {
-        const removed = bucket.pop();
-        if (removed) {
-          selectedByUserId.delete(removed.userId);
-        }
+        return false;
       }
 
       bucket.push(player);
       selectedByUserId.set(player.userId, player);
+      return true;
     };
 
     for (const role of ROLES) {
@@ -417,8 +415,7 @@ export class QueueService {
         }
 
         const duo = selectableQueue.find((candidate) => candidate.userId === player.duoUserId);
-        if (duo) {
-          addSelected(duo);
+        if (duo && addSelected(duo)) {
           changed = true;
         }
       }
