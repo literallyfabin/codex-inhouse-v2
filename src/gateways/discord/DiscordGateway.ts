@@ -649,15 +649,15 @@ export class DiscordGateway {
     const target = interaction.options.getUser("jogador") ?? interaction.user;
     const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
     await this.userService.ensureDefaultStats(interaction.guildId, user.id);
-    const summaries = await this.statsService.getPlayerSummary(interaction.guildId, user.id);
+    const summary = await this.statsService.getPlayerSummary(interaction.guildId, user.id);
 
-    if (summaries.length === 0) {
+    if (!summary) {
       await interaction.editReply(`${target.displayName} ainda nao tem partidas finalizadas neste servidor.`);
       return;
     }
 
     const presentation = await this.presentationForGuild(interaction.guildId);
-    await interaction.editReply({ embeds: [buildStatsEmbed(target.displayName, summaries, presentation)] });
+    await interaction.editReply({ embeds: [buildStatsEmbed(target.displayName, summary, presentation)] });
   }
 
   private async handleSynergy(interaction: ChatInputCommandInteraction): Promise<void> {

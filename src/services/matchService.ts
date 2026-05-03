@@ -14,9 +14,6 @@ import { conservativeMmr } from "../core/matchmaking/trueskillMath.js";
 import { MatchmakingService } from "../core/matchmaking/MatchmakingService.js";
 import { supabase } from "./supabaseClient.js";
 
-const DEFAULT_MU = 25;
-const DEFAULT_SIGMA = 25 / 3;
-
 const jsonStringArray = (value: Json): string[] => {
   if (!Array.isArray(value)) {
     return [];
@@ -112,27 +109,24 @@ export class MatchService {
       throw new Error("Cannot hydrate ratings without a guild id.");
     }
 
-    const defaultRows = players.map((player) => ({
+    const userIds = [...new Set(players.map((player) => player.userId))];
+    const defaultRows = userIds.map((userId) => ({
       guild_id: guildId,
-      user_id: player.userId,
-      role: player.role,
-      mu: DEFAULT_MU,
-      sigma: DEFAULT_SIGMA,
+      user_id: userId,
       updated_at: new Date().toISOString(),
     }));
 
     const { error: upsertError } = await supabase
-      .from("player_stats")
-      .upsert(defaultRows, { onConflict: "guild_id,user_id,role", ignoreDuplicates: true });
+      .from("player_stats_global")
+      .upsert(defaultRows, { onConflict: "guild_id,user_id", ignoreDuplicates: true });
 
     if (upsertError) {
       throw new Error(`Failed to prepare player ratings: ${upsertError.message}`);
     }
 
-    const userIds = players.map((player) => player.userId);
     const { data, error } = await supabase
-      .from("player_stats")
-      .select("guild_id, user_id, role, mu, sigma, mmr")
+      .from("player_stats_global")
+      .select("guild_id, user_id, mu, sigma, mmr")
       .eq("guild_id", guildId)
       .in("user_id", userIds);
 
@@ -140,12 +134,12 @@ export class MatchService {
       throw new Error(`Failed to load player ratings: ${error.message}`);
     }
 
-    const ratingsByKey = new Map<string, PlayerRating>();
+    const ratingsByUserId = new Map<string, PlayerRating>();
     for (const row of data) {
-      ratingsByKey.set(this.ratingKey(row.user_id, row.role), {
+      ratingsByUserId.set(row.user_id, {
         guildId: row.guild_id,
         userId: row.user_id,
-        role: row.role,
+        role: "TOP",
         mu: row.mu,
         sigma: row.sigma,
         mmr: row.mmr,
@@ -153,12 +147,12 @@ export class MatchService {
     }
 
     return players.map((player) => {
-      const rating = ratingsByKey.get(this.ratingKey(player.userId, player.role));
-      if (!rating) {
-        throw new Error(`Missing rating for user ${player.userId} on role ${player.role}.`);
+      const base = ratingsByUserId.get(player.userId);
+      if (!base) {
+        throw new Error(`Missing rating for user ${player.userId}.`);
       }
 
-      return { ...player, rating };
+      return { ...player, rating: { ...base, role: player.role } };
     });
   }
 
@@ -242,16 +236,15 @@ export class MatchService {
     const updates = this.matchmaking.calculateUpdatedRatings(match, winningTeam);
     const now = new Date().toISOString();
 
-    const { error: statsError } = await supabase.from("player_stats").upsert(
+    const { error: statsError } = await supabase.from("player_stats_global").upsert(
       updates.map((rating) => ({
         guild_id: matchRow.guild_id,
         user_id: rating.userId,
-        role: rating.role,
         mu: rating.mu,
         sigma: rating.sigma,
         updated_at: now,
       })),
-      { onConflict: "guild_id,user_id,role" },
+      { onConflict: "guild_id,user_id" },
     );
 
     if (statsError) {
@@ -593,10 +586,6 @@ export class MatchService {
       muDifference: 0,
       balanceScore: 0,
     };
-  }
-
-  private ratingKey(userId: string, role: Role): string {
-    return `${userId}:${role}`;
   }
 
   private async withParticipantSummaries(

@@ -12,7 +12,7 @@ import type { QueueSnapshot } from "../../core/queue/QueueService.js";
 import type {
   HistoryEntry,
   MmrHistoryEntry,
-  PlayerRoleSummary,
+  PlayerSummary,
   RankingEntry,
   SynergyNemesisResult,
 } from "../../services/statsService.js";
@@ -793,8 +793,9 @@ export const buildRankingEmbed = (
     if (rankNum === 3) medal = "🥉 ";
 
     const winrate = entry.wins + entry.losses > 0 ? Math.round((entry.wins / (entry.wins + entry.losses)) * 100) : 0;
-    
-    return `${medal}${roleIcon(entry.role, presentation)} **${entry.displayName}** • ${Math.round(entry.mmr)} MMR \`[${entry.wins}W ${entry.losses}L | ${winrate}%]\``;
+    const rolePrefix = entry.role ? `${roleIcon(entry.role, presentation)} ` : "";
+
+    return `${medal}${rolePrefix}**${entry.displayName}** • ${Math.round(entry.mmr)} MMR \`[${entry.wins}W ${entry.losses}L | ${winrate}%]\``;
   }).join("\n");
 
   return new EmbedBuilder()
@@ -806,48 +807,36 @@ export const buildRankingEmbed = (
 
 export const buildStatsEmbed = (
   displayName: string,
-  summaries: readonly PlayerRoleSummary[],
+  summary: PlayerSummary,
   presentation?: DiscordPresentation,
 ): EmbedBuilder => {
+  const { global: g, roles } = summary;
   const embed = new EmbedBuilder()
     .setColor(COLORS.gold)
     .setTitle(`👤 Perfil do Jogador: ${displayName}`);
 
-  if (summaries.length === 0) {
-    return embed.setDescription("*Este jogador ainda não possui estatísticas.*");
-  }
+  const rankText = g.rank ? `🏆 Rank **#${g.rank}**` : "Sem ranking";
+  const globalWinrate = g.totalGames > 0 ? Math.round((g.totalWins / g.totalGames) * 100) : 0;
 
-  let totalWins = 0;
-  let totalLosses = 0;
-  let highestMmr = 0;
-  let mainRole: Role | null = null;
-  
-  const roleBlocks = summaries.map((row) => {
-    const games = row.wins + row.losses;
-    totalWins += row.wins;
-    totalLosses += row.losses;
-    
-    if (row.mmr > highestMmr) {
-      highestMmr = row.mmr;
-      mainRole = row.role;
-    }
+  const mainRole = roles.reduce<(typeof roles)[number] | null>(
+    (best, r) => (r.games > (best?.games ?? 0) ? r : best),
+    null,
+  );
 
-    const winrate = games > 0 ? Math.round((row.wins / games) * 100) : 0;
-    const rankText = row.rank ? `🏆 Rank **#${row.rank}**` : "Unranked";
-    
-    return `${roleIcon(row.role, presentation)} **${roleName[row.role]}**\n` +
-           `└ MMR: **${Math.round(row.mmr)}** | ${rankText} | ${row.wins}V - ${row.losses}D (${winrate}%)`;
+  const roleBlocks = roles.map((row) => {
+    const winrate = row.games > 0 ? Math.round((row.wins / row.games) * 100) : 0;
+    return `${roleIcon(row.role, presentation)} **${roleName[row.role]}** — ${row.wins}V ${row.losses}D (${winrate}%)`;
   });
 
-  const totalGames = totalWins + totalLosses;
-  const globalWinrate = totalGames > 0 ? Math.round((totalWins / totalGames) * 100) : 0;
-  
   embed.setDescription(
-    `**Partidas Totais:** ${totalGames}\n` +
-    `**Taxa de Vitória (Geral):** ${globalWinrate}%\n` +
-    `**Melhor Rota:** ${mainRole ? `${roleIcon(mainRole, presentation)} ${roleName[mainRole]}` : "N/A"}\n\n` +
-    `### Desempenho por Rota\n` +
-    roleBlocks.join("\n\n")
+    [
+      `**MMR Global:** ${Math.round(g.mmr)} | ${rankText}`,
+      `**Partidas Totais:** ${g.totalGames} | **Taxa de Vitória:** ${globalWinrate}%`,
+      `**Rota Principal:** ${mainRole ? `${roleIcon(mainRole.role, presentation)} ${roleName[mainRole.role]}` : "N/A"}`,
+      "",
+      "**Desempenho por Rota**",
+      ...(roleBlocks.length > 0 ? roleBlocks : ["*Nenhuma partida registrada.*"]),
+    ].join("\n"),
   );
 
   return embed;
@@ -991,89 +980,62 @@ export const buildMmrHistoryEmbed = (
   role?: Role,
   presentation?: DiscordPresentation,
 ): EmbedBuilder => {
-  const byRole = new Map<Role, MmrHistoryEntry[]>();
-  for (const entry of history) {
-    const rows = byRole.get(entry.role) ?? [];
-    rows.push(entry);
-    byRole.set(entry.role, rows);
-  }
-
   const embed = new EmbedBuilder()
     .setColor(COLORS.slate)
-    .setTitle(role ? `📈 Histórico de MMR de ${displayName} - ${roleName[role]}` : `📈 Histórico de MMR de ${displayName}`);
+    .setTitle(
+      role
+        ? `📈 Histórico de MMR de ${displayName} - ${roleName[role]}`
+        : `📈 Histórico de MMR de ${displayName}`,
+    );
 
   if (history.length === 0) {
     return embed.setDescription("*Sem histórico de MMR.*");
   }
 
-  const datasets: any[] = [];
-  const roleColors: Record<Role, string> = {
-    TOP: "rgb(231, 76, 60)",
-    JGL: "rgb(46, 204, 113)",
-    MID: "rgb(52, 152, 219)",
-    ADC: "rgb(241, 196, 15)",
-    SUP: "rgb(155, 89, 182)"
-  };
+  const values = history.map((entry) => Math.round(entry.mmr));
+  const first = values[0] ?? 0;
+  const last = values[values.length - 1] ?? first;
+  const diff = last - first;
+  const emoji = diff > 0 ? "📈" : diff < 0 ? "📉" : "➖";
+  const suffix = diff > 0 ? `+${diff}` : String(diff);
 
-  let maxMatches = 0;
+  const recentMatches = history
+    .filter((entry) => !entry.isCurrent)
+    .slice(-3)
+    .map((entry) => `\`${formatMatchLabel(entry.matchNumber, entry.matchId)}\``)
+    .join(", ");
 
-  for (const currentRole of ROLES) {
-    const rows = byRole.get(currentRole);
-    if (!rows || rows.length === 0) {
-      continue;
-    }
+  embed.addFields({
+    name: "MMR Global",
+    value: [`${emoji} **${first} ➔ ${last}** (${suffix})`, `Últimas partidas: ${recentMatches || "Nenhuma"}`].join(
+      "\n",
+    ),
+    inline: false,
+  });
 
-    const values = rows.map((entry) => Math.round(entry.mmr));
-    if (values.length > maxMatches) {
-      maxMatches = values.length;
-    }
-
-    datasets.push({
-      label: roleName[currentRole],
-      data: values,
-      borderColor: roleColors[currentRole],
-      backgroundColor: "transparent",
-      borderWidth: 2,
-      tension: 0.3,
-      fill: false,
-    });
-
-    const first = values[0] ?? 0;
-    const last = values[values.length - 1] ?? first;
-    const diff = last - first;
-    const emoji = diff > 0 ? "📈" : diff < 0 ? "📉" : "➖";
-    const suffix = diff > 0 ? `+${diff}` : String(diff);
-    
-    const recentMatches = rows
-      .filter((entry) => !entry.isCurrent)
-      .slice(-3)
-      .map((entry) => `\`${formatMatchLabel(entry.matchNumber, entry.matchId)}\``)
-      .join(", ");
-
-    embed.addFields({
-      name: `${roleIcon(currentRole, presentation)} ${roleName[currentRole]}`,
-      value: [
-        `${emoji} **${first} ➔ ${last}** (${suffix})`,
-        `Últimas partidas: ${recentMatches || "Nenhuma"}`
-      ].join("\n"),
-      inline: false,
-    });
-  }
-
-  // QuickChart.io V2 API Format for Chart.js 2.9
   const chartConfig = {
-    type: 'line',
+    type: "line",
     data: {
-      labels: Array.from({ length: maxMatches }, (_, i) => `${i + 1}`),
-      datasets
+      labels: values.map((_, i) => `${i + 1}`),
+      datasets: [
+        {
+          label: "MMR",
+          data: values,
+          borderColor: "rgb(212, 167, 44)",
+          backgroundColor: "transparent",
+          borderWidth: 2,
+          tension: 0.3,
+          fill: false,
+        },
+      ],
     },
     options: {
-      legend: { labels: { fontColor: 'white' } },
+      legend: { labels: { fontColor: "white" } },
       scales: {
-        xAxes: [{ ticks: { fontColor: 'white' }, gridLines: { color: 'rgba(255,255,255,0.1)' } }],
-        yAxes: [{ ticks: { fontColor: 'white' }, gridLines: { color: 'rgba(255,255,255,0.1)' } }]
-      }
-    }
+        xAxes: [{ ticks: { fontColor: "white" }, gridLines: { color: "rgba(255,255,255,0.1)" } }],
+        yAxes: [{ ticks: { fontColor: "white" }, gridLines: { color: "rgba(255,255,255,0.1)" } }],
+      },
+    },
   };
 
   const chartUrl = `https://quickchart.io/chart?bkg=transparent&w=500&h=300&c=${encodeURIComponent(JSON.stringify(chartConfig))}`;

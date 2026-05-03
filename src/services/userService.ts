@@ -1,5 +1,3 @@
-import type { Role } from "../core/models/types.js";
-import { ROLES } from "../core/models/types.js";
 import { supabase } from "./supabaseClient.js";
 
 export interface AppUser {
@@ -96,17 +94,13 @@ export class UserService {
     return data.map(mapUser);
   }
 
-  async ensureDefaultStats(guildId: string, userId: string, roles: readonly Role[] = ROLES): Promise<void> {
-    const rows = roles.map((role) => ({
-      guild_id: guildId,
-      user_id: userId,
-      role,
-      updated_at: new Date().toISOString(),
-    }));
-
+  async ensureDefaultStats(guildId: string, userId: string): Promise<void> {
     const { error } = await supabase
-      .from("player_stats")
-      .upsert(rows, { onConflict: "guild_id,user_id,role", ignoreDuplicates: true });
+      .from("player_stats_global")
+      .upsert(
+        { guild_id: guildId, user_id: userId, updated_at: new Date().toISOString() },
+        { onConflict: "guild_id,user_id", ignoreDuplicates: true },
+      );
 
     if (error) {
       throw new Error(`Failed to ensure player stats: ${error.message}`);

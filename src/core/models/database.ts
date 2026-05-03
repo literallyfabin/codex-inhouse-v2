@@ -59,6 +59,29 @@ export interface Database {
         };
         Relationships: [];
       };
+      player_stats_global: {
+        Row: {
+          guild_id: string;
+          user_id: string;
+          mu: number;
+          sigma: number;
+          mmr: number;
+          updated_at: string;
+        };
+        Insert: {
+          guild_id: string;
+          user_id: string;
+          mu?: number;
+          sigma?: number;
+          updated_at?: string;
+        };
+        Update: {
+          mu?: number;
+          sigma?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       player_stats: {
         Row: {
           guild_id: string;
@@ -147,6 +170,8 @@ export interface Database {
           champion_name?: string | null;
         };
         Update: {
+          mu_before?: number;
+          sigma_before?: number;
           champion_name?: string | null;
         };
         Relationships: [];
