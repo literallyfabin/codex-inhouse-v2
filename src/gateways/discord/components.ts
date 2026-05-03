@@ -6,7 +6,7 @@ import {
   SlashCommandBuilder,
   type MessageActionRowComponentBuilder,
 } from "discord.js";
-import type { BalancedMatch, Role, Team } from "../../core/models/types.js";
+import type { BalancedMatch, QueuePlayer, Role, Team } from "../../core/models/types.js";
 import { ROLES } from "../../core/models/types.js";
 import type { QueueSnapshot } from "../../core/queue/QueueService.js";
 import type {
@@ -549,16 +549,43 @@ export const buildQueueEmbed = (
   snapshot: QueueSnapshot,
   presentation?: DiscordPresentation,
 ): EmbedBuilder => {
+  // Find all duos and assign them a unique emoji pair
+  const duoEmojis = ["🔵", "🟡", "🟢", "🟣", "🟤"];
+  const duoMap = new Map<string, string>(); // userId -> emoji
+  let duoIndex = 0;
+
+  const allPlayers = ROLES.flatMap((role) => snapshot.roles[role]);
+  
+  for (const player of allPlayers) {
+    if (player.duoUserId && !duoMap.has(player.userId)) {
+      // Check if their duo partner is also in the queue
+      const partner = allPlayers.find((p) => p.userId === player.duoUserId);
+      if (partner) {
+        const emoji = duoEmojis[duoIndex % duoEmojis.length] || "🔗";
+        duoMap.set(player.userId, emoji);
+        duoMap.set(partner.userId, emoji);
+        duoIndex++;
+      }
+    }
+  }
+
+  const formatPlayerName = (player?: QueuePlayer): string => {
+    if (!player) return playerLabel(undefined);
+    const duoIndicator = duoMap.get(player.userId);
+    const name = playerLabel(player.displayName);
+    return duoIndicator ? `${name} ${duoIndicator}` : name;
+  };
+
   const slotColumn = (slotIndex: number): string =>
     ROLES.map((role) => {
       const player = snapshot.roles[role][slotIndex];
-      return `${roleIcon(role, presentation)} ${playerLabel(player?.displayName)}`;
+      return `${roleIcon(role, presentation)} ${formatPlayerName(player)}`;
     }).join("\n");
 
   const waitingPlayers = ROLES.flatMap((role) =>
     snapshot.roles[role]
       .slice(2)
-      .map((player) => `${roleIcon(role, presentation)} ${player.displayName}`),
+      .map((player) => `${roleIcon(role, presentation)} ${formatPlayerName(player)}`),
   );
 
   const status = snapshot.isReady ? "✅ Pronta para ready-check" : "⏳ Aguardando jogadores...";
