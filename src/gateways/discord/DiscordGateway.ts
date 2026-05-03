@@ -253,6 +253,14 @@ export class DiscordGateway {
         await this.handleChampion(interaction);
         return;
 
+      case "synergy":
+        await this.handleSynergy(interaction);
+        return;
+
+      case "nemesis":
+        await this.handleNemesis(interaction);
+        return;
+
       case "won":
         await this.handleWonCommand(interaction);
         return;
@@ -650,6 +658,46 @@ export class DiscordGateway {
 
     const presentation = await this.presentationForGuild(interaction.guildId);
     await interaction.editReply({ embeds: [buildStatsEmbed(target.displayName, summaries, presentation)] });
+  }
+
+  private async handleSynergy(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+    const target = interaction.options.getUser("jogador") ?? interaction.user;
+    const user = await this.userService.getUserByPlatformId("discord", target.id);
+    
+    if (!user) {
+      await interaction.editReply(`${target.displayName} ainda nao esta no sistema.`);
+      return;
+    }
+
+    const synergy = await this.statsService.getSynergy(interaction.guildId, user.id, 3);
+    const { buildSynergyEmbed } = await import("./components.js");
+    await interaction.editReply({ embeds: [buildSynergyEmbed(target.displayName, synergy)] });
+  }
+
+  private async handleNemesis(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+    const target = interaction.options.getUser("jogador") ?? interaction.user;
+    const user = await this.userService.getUserByPlatformId("discord", target.id);
+    
+    if (!user) {
+      await interaction.editReply(`${target.displayName} ainda nao esta no sistema.`);
+      return;
+    }
+
+    const nemesis = await this.statsService.getNemesis(interaction.guildId, user.id, 3);
+    const { buildNemesisEmbed } = await import("./components.js");
+    await interaction.editReply({ embeds: [buildNemesisEmbed(target.displayName, nemesis)] });
   }
 
   private async handleRanking(interaction: ChatInputCommandInteraction): Promise<void> {

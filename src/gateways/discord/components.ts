@@ -14,6 +14,7 @@ import type {
   MmrHistoryEntry,
   PlayerRoleSummary,
   RankingEntry,
+  SynergyNemesisResult,
 } from "../../services/statsService.js";
 import type { MatchSummary } from "../../services/matchService.js";
 
@@ -247,6 +248,20 @@ export const rankingCommand = new SlashCommandBuilder()
       .addChoices(...ROLES.map((role) => ({ name: role, value: role }))),
   );
 
+export const synergyCommand = new SlashCommandBuilder()
+  .setName("synergy")
+  .setDescription("Encontra o parceiro com quem voce tem a melhor taxa de vitoria.")
+  .addUserOption((option) =>
+    option.setName("jogador").setDescription("Ver a sinergia de outro jogador."),
+  );
+
+export const nemesisCommand = new SlashCommandBuilder()
+  .setName("nemesis")
+  .setDescription("Encontra o jogador que mais te derrotou.")
+  .addUserOption((option) =>
+    option.setName("jogador").setDescription("Ver o nemesis de outro jogador."),
+  );
+
 export const historyCommand = new SlashCommandBuilder()
   .setName("history")
   .setDescription("Mostra o historico de partidas.")
@@ -432,6 +447,8 @@ export const discordCommands = [
   lastMatchCommand,
   mmrHistoryCommand,
   championCommand,
+  synergyCommand,
+  nemesisCommand,
   wonCommand,
   cancelCommand,
   remakeCommand,
@@ -1063,6 +1080,48 @@ export const buildMmrHistoryEmbed = (
   embed.setImage(chartUrl);
 
   return embed;
+};
+
+export const buildSynergyEmbed = (
+  displayName: string,
+  result: SynergyNemesisResult | null,
+): EmbedBuilder => {
+  const embed = new EmbedBuilder().setTitle(`🤝 Sinergia de ${displayName}`);
+
+  if (!result) {
+    return embed
+      .setColor(COLORS.slate)
+      .setDescription("Ainda nao temos dados suficientes para encontrar sua sinergia. Jogue mais partidas!");
+  }
+
+  return embed
+    .setColor(COLORS.green)
+    .setDescription(
+      `Seu melhor parceiro e **${result.displayName}**!\n\n` +
+      `Voces jogaram **${result.games}** partidas juntos e venceram **${result.wins}** delas.\n` +
+      `Uma taxa de vitoria impressionante de **${(result.winrate * 100).toFixed(1)}%**.`
+    );
+};
+
+export const buildNemesisEmbed = (
+  displayName: string,
+  result: SynergyNemesisResult | null,
+): EmbedBuilder => {
+  const embed = new EmbedBuilder().setTitle(`💀 Nemesis de ${displayName}`);
+
+  if (!result) {
+    return embed
+      .setColor(COLORS.slate)
+      .setDescription("Ainda nao temos dados suficientes para encontrar seu nemesis. Jogue mais partidas!");
+  }
+
+  return embed
+    .setColor(COLORS.softRed)
+    .setDescription(
+      `Seu maior inimigo e **${result.displayName}**.\n\n` +
+      `Voces se enfrentaram **${result.games}** vezes e ele te derrotou em **${result.wins}** delas.\n` +
+      `Ele tem **${(result.winrate * 100).toFixed(1)}%** de vitoria contra voce.`
+    );
 };
 
 export const buildValidationEmbed = (params: {

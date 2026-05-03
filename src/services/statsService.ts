@@ -45,6 +45,14 @@ export interface PlayerRoleSummary {
   rank: number | null;
 }
 
+export interface SynergyNemesisResult {
+  userId: string;
+  displayName: string;
+  games: number;
+  wins: number;
+  winrate: number;
+}
+
 export interface RankingEntry extends PlayerRoleSummary {
   userId: string;
   displayName: string;
@@ -499,5 +507,105 @@ export class StatsService {
   private async getLatestMatchIdForUser(guildId: string, userId: string): Promise<string | null> {
     const history = await this.getHistory(guildId, userId, 1);
     return history[0]?.matchId ?? null;
+  }
+
+  async getSynergy(guildId: string, userId: string, minGames = 2): Promise<SynergyNemesisResult | null> {
+    const matches = await this.getCompletedMatches(guildId);
+    if (matches.size === 0) return null;
+
+    const participants = await this.getParticipantsByMatchIds([...matches.keys()]);
+    
+    const userMatches = new Map<string, Team>();
+    for (const p of participants) {
+      if (p.user_id === userId) {
+        userMatches.set(p.match_id, p.team);
+      }
+    }
+
+    if (userMatches.size === 0) return null;
+
+    const partnerStats = new Map<string, { games: number; wins: number; displayName: string }>();
+
+    for (const p of participants) {
+      if (p.user_id === userId) continue;
+      
+      const userTeam = userMatches.get(p.match_id);
+      if (!userTeam || p.team !== userTeam) continue;
+
+      const match = matches.get(p.match_id);
+      if (!match) continue;
+
+      const stats = partnerStats.get(p.user_id) ?? { games: 0, wins: 0, displayName: p.display_name ?? "Desconhecido" };
+      stats.games += 1;
+      if (match.winning_team === userTeam) {
+        stats.wins += 1;
+      }
+      partnerStats.set(p.user_id, stats);
+    }
+
+    let bestPartner: SynergyNemesisResult | null = null;
+    let highestScore = -1;
+
+    for (const [partnerId, stats] of partnerStats.entries()) {
+      if (stats.games < minGames) continue;
+      const winrate = stats.wins / stats.games;
+      const score = winrate * 1000 + stats.games;
+      if (score > highestScore) {
+        highestScore = score;
+        bestPartner = { userId: partnerId, displayName: stats.displayName, games: stats.games, wins: stats.wins, winrate };
+      }
+    }
+
+    return bestPartner;
+  }
+
+  async getNemesis(guildId: string, userId: string, minGames = 2): Promise<SynergyNemesisResult | null> {
+    const matches = await this.getCompletedMatches(guildId);
+    if (matches.size === 0) return null;
+
+    const participants = await this.getParticipantsByMatchIds([...matches.keys()]);
+    
+    const userMatches = new Map<string, Team>();
+    for (const p of participants) {
+      if (p.user_id === userId) {
+        userMatches.set(p.match_id, p.team);
+      }
+    }
+
+    if (userMatches.size === 0) return null;
+
+    const enemyStats = new Map<string, { games: number; winsAgainstUser: number; displayName: string }>();
+
+    for (const p of participants) {
+      if (p.user_id === userId) continue;
+      
+      const userTeam = userMatches.get(p.match_id);
+      if (!userTeam || p.team === userTeam) continue;
+
+      const match = matches.get(p.match_id);
+      if (!match) continue;
+
+      const stats = enemyStats.get(p.user_id) ?? { games: 0, winsAgainstUser: 0, displayName: p.display_name ?? "Desconhecido" };
+      stats.games += 1;
+      if (match.winning_team === p.team) {
+        stats.winsAgainstUser += 1;
+      }
+      enemyStats.set(p.user_id, stats);
+    }
+
+    let worstNemesis: SynergyNemesisResult | null = null;
+    let highestScore = -1;
+
+    for (const [enemyId, stats] of enemyStats.entries()) {
+      if (stats.games < minGames) continue;
+      const winrateAgainstUser = stats.winsAgainstUser / stats.games;
+      const score = winrateAgainstUser * 1000 + stats.games;
+      if (score > highestScore) {
+        highestScore = score;
+        worstNemesis = { userId: enemyId, displayName: stats.displayName, games: stats.games, wins: stats.winsAgainstUser, winrate: winrateAgainstUser };
+      }
+    }
+
+    return worstNemesis;
   }
 }

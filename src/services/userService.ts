@@ -64,6 +64,21 @@ export class UserService {
     return mapUser(data);
   }
 
+  async getUserByPlatformId(platform: "discord" | "whatsapp", platformId: string): Promise<AppUser | null> {
+    const field = platform === "discord" ? "discord_id" : "whatsapp_id";
+    const { data, error } = await supabase
+      .from("users")
+      .select("id, discord_id, whatsapp_id, display_name")
+      .eq(field, platformId)
+      .maybeSingle();
+
+    if (error) {
+      throw new Error(`Failed to get user by platform ID: ${error.message}`);
+    }
+
+    return data ? mapUser(data) : null;
+  }
+
   async getUsersByIds(userIds: string[]): Promise<AppUser[]> {
     if (userIds.length === 0) {
       return [];
