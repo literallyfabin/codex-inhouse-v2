@@ -202,19 +202,19 @@ export interface Database {
         Row: {
           channel_id: string;
           guild_id: string;
-          channel_type: "QUEUE" | "RANKING";
+          channel_type: "QUEUE" | "RANKING" | "TOP";
           created_at: string;
           updated_at: string;
         };
         Insert: {
           channel_id: string;
           guild_id: string;
-          channel_type: "QUEUE" | "RANKING";
+          channel_type: "QUEUE" | "RANKING" | "TOP";
           created_at?: string;
           updated_at?: string;
         };
         Update: {
-          channel_type?: "QUEUE" | "RANKING";
+          channel_type?: "QUEUE" | "RANKING" | "TOP";
           updated_at?: string;
         };
         Relationships: [];
@@ -292,7 +292,7 @@ export interface Database {
       match_status: MatchStatus;
       match_team: Team;
       winning_team: WinningTeam;
-      channel_type: "QUEUE" | "RANKING";
+      channel_type: "QUEUE" | "RANKING" | "TOP";
       ready_check_status: "PENDING" | "ACCEPTED" | "CANCELLED" | "TIMEOUT";
     };
     CompositeTypes: Record<string, never>;

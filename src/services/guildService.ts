@@ -1,6 +1,6 @@
 import { supabase } from "./supabaseClient.js";
 
-export type ChannelType = "QUEUE" | "RANKING";
+export type ChannelType = "QUEUE" | "RANKING" | "TOP";
 export type GuildConfigKey = "voice" | "queue_reset";
 
 export interface MarkedChannel {

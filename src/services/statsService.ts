@@ -100,6 +100,29 @@ export interface MmrHistoryEntry {
   isCurrent: boolean;
 }
 
+export interface RoleDistribution {
+  role: Role;
+  games: number;
+  wins: number;
+  losses: number;
+  percentage: number;
+}
+
+export interface RoleReportResult {
+  totalGames: number;
+  roles: RoleDistribution[];
+  versatility: number;
+}
+
+export interface ServerHighlights {
+  topMmr: { displayName: string; mmr: number } | null;
+  topWinrate: { displayName: string; winrate: number; games: number } | null;
+  topStreak: { displayName: string; streak: number } | null;
+  bestDuo: { name1: string; name2: string; winrate: number; games: number } | null;
+  biggestRivalry: { name1: string; name2: string; games: number } | null;
+  mostActive: { displayName: string; games: number } | null;
+}
+
 const displayMmr = (stat: Pick<GlobalStatRow, "mu" | "sigma" | "mmr">): number =>
   Number.isFinite(stat.mmr) ? stat.mmr : conservativeMmr(stat.mu, stat.sigma);
 
@@ -405,7 +428,7 @@ export class StatsService {
     let best: SynergyNemesisResult | null = null;
     let highestScore = -1;
     for (const [partnerId, stats] of partnerStats) {
-      if (stats.games < minGames) continue;
+      if (stats.games < minGames || stats.wins === 0) continue;
       const winrate = stats.wins / stats.games;
       const score = winrate * 1000 + stats.games;
       if (score > highestScore) {
@@ -445,7 +468,7 @@ export class StatsService {
     let worst: SynergyNemesisResult | null = null;
     let highestScore = -1;
     for (const [enemyId, stats] of enemyStats) {
-      if (stats.games < minGames) continue;
+      if (stats.games < minGames || stats.winsAgainstUser === 0) continue;
       const winrate = stats.winsAgainstUser / stats.games;
       const score = winrate * 1000 + stats.games;
       if (score > highestScore) {
@@ -454,6 +477,179 @@ export class StatsService {
       }
     }
     return worst;
+  }
+
+  async getRoleReport(guildId: string, userId: string): Promise<RoleReportResult | null> {
+    const participants = await this.getParticipantRowsForUser(userId);
+    const matches = await this.getMatchesByIds(
+      guildId,
+      participants.map((row) => row.match_id),
+    );
+    const roleRecords = this.recordsByRole(participants, matches);
+
+    let totalGames = 0;
+    for (const record of roleRecords.values()) totalGames += record.games;
+    if (totalGames === 0) return null;
+
+    const roles: RoleDistribution[] = ROLES
+      .map((role) => {
+        const record = roleRecords.get(role) ?? { games: 0, wins: 0, losses: 0 };
+        return {
+          role,
+          ...record,
+          percentage: totalGames > 0 ? record.games / totalGames : 0,
+        };
+      })
+      .filter((r) => r.games > 0)
+      .sort((a, b) => b.games - a.games);
+
+    const rolesPlayed = roles.length;
+    const versatility = rolesPlayed / ROLES.length;
+
+    return { totalGames, roles, versatility };
+  }
+
+  async getServerHighlights(guildId: string): Promise<ServerHighlights | null> {
+    const matches = await this.getCompletedMatches(guildId);
+    if (matches.size === 0) return null;
+
+    const participants = await this.getParticipantsByMatchIds([...matches.keys()]);
+    const allUserIds = new Set(participants.map((p) => p.user_id));
+    const names = await this.getDisplayNames([...allUserIds]);
+    const name = (userId: string) => names.get(userId) ?? "Desconhecido";
+
+    // --- Top MMR ---
+    const { data: topStat } = await supabase
+      .from("player_stats_global")
+      .select("user_id, mu, sigma, mmr")
+      .eq("guild_id", guildId)
+      .order("mmr", { ascending: false })
+      .limit(1);
+
+    const topMmr = topStat?.[0]
+      ? { displayName: name(topStat[0].user_id), mmr: displayMmr(topStat[0]) }
+      : null;
+
+    // --- Per-user W/L ---
+    const userRecords = new Map<string, { games: number; wins: number; losses: number }>();
+    for (const p of participants) {
+      const match = matches.get(p.match_id);
+      if (!match || match.winning_team === "NONE") continue;
+      const current = userRecords.get(p.user_id) ?? { games: 0, wins: 0, losses: 0 };
+      current.games += 1;
+      if (match.winning_team === p.team) current.wins += 1;
+      else current.losses += 1;
+      userRecords.set(p.user_id, current);
+    }
+
+    // --- Top Winrate (min 3 games) ---
+    let topWinrate: ServerHighlights["topWinrate"] = null;
+    let bestWr = -1;
+    for (const [userId, record] of userRecords) {
+      if (record.games < 3) continue;
+      const wr = record.wins / record.games;
+      if (wr > bestWr) {
+        bestWr = wr;
+        topWinrate = { displayName: name(userId), winrate: wr, games: record.games };
+      }
+    }
+
+    // --- Most Active ---
+    let mostActive: ServerHighlights["mostActive"] = null;
+    let maxGames = 0;
+    for (const [userId, record] of userRecords) {
+      if (record.games > maxGames) {
+        maxGames = record.games;
+        mostActive = { displayName: name(userId), games: record.games };
+      }
+    }
+
+    // --- Top Current Win Streak ---
+    const sortedMatches = [...matches.entries()]
+      .filter(([, m]) => m.winning_team !== "NONE")
+      .sort(([, a], [, b]) => Date.parse(a.completed_at ?? a.created_at) - Date.parse(b.completed_at ?? b.created_at));
+
+    const streaks = new Map<string, number>();
+    for (const [matchId, match] of sortedMatches) {
+      for (const p of participants.filter((pp) => pp.match_id === matchId)) {
+        const won = match.winning_team === p.team;
+        const current = streaks.get(p.user_id) ?? 0;
+        streaks.set(p.user_id, won ? (current > 0 ? current + 1 : 1) : (current < 0 ? current - 1 : -1));
+      }
+    }
+
+    let topStreak: ServerHighlights["topStreak"] = null;
+    let bestStreak = 0;
+    for (const [userId, streak] of streaks) {
+      if (streak > bestStreak) {
+        bestStreak = streak;
+        topStreak = { displayName: name(userId), streak };
+      }
+    }
+
+    // --- Best Duo (allies) ---
+    const duoKey = (a: string, b: string) => a < b ? `${a}|${b}` : `${b}|${a}`;
+    const duoStats = new Map<string, { id1: string; id2: string; games: number; wins: number }>();
+
+    for (const [matchId, match] of matches) {
+      if (match.winning_team === "NONE") continue;
+      const matchParticipants = participants.filter((p) => p.match_id === matchId);
+      const teams = new Map<string, string>();
+      for (const p of matchParticipants) teams.set(p.user_id, p.team);
+
+      for (let i = 0; i < matchParticipants.length; i++) {
+        for (let j = i + 1; j < matchParticipants.length; j++) {
+          const p1 = matchParticipants[i]!;
+          const p2 = matchParticipants[j]!;
+          if (p1.team !== p2.team) continue;
+          const key = duoKey(p1.user_id, p2.user_id);
+          const stat = duoStats.get(key) ?? { id1: p1.user_id, id2: p2.user_id, games: 0, wins: 0 };
+          stat.games += 1;
+          if (match.winning_team === p1.team) stat.wins += 1;
+          duoStats.set(key, stat);
+        }
+      }
+    }
+
+    let bestDuo: ServerHighlights["bestDuo"] = null;
+    let bestDuoScore = -1;
+    for (const stat of duoStats.values()) {
+      if (stat.games < 2 || stat.wins === 0) continue;
+      const wr = stat.wins / stat.games;
+      const score = wr * 1000 + stat.games;
+      if (score > bestDuoScore) {
+        bestDuoScore = score;
+        bestDuo = { name1: name(stat.id1), name2: name(stat.id2), winrate: wr, games: stat.games };
+      }
+    }
+
+    // --- Biggest Rivalry (enemies) ---
+    const rivalryStats = new Map<string, { id1: string; id2: string; games: number }>();
+    for (const [matchId] of matches) {
+      const matchParticipants = participants.filter((p) => p.match_id === matchId);
+      for (let i = 0; i < matchParticipants.length; i++) {
+        for (let j = i + 1; j < matchParticipants.length; j++) {
+          const p1 = matchParticipants[i]!;
+          const p2 = matchParticipants[j]!;
+          if (p1.team === p2.team) continue;
+          const key = duoKey(p1.user_id, p2.user_id);
+          const stat = rivalryStats.get(key) ?? { id1: p1.user_id, id2: p2.user_id, games: 0 };
+          stat.games += 1;
+          rivalryStats.set(key, stat);
+        }
+      }
+    }
+
+    let biggestRivalry: ServerHighlights["biggestRivalry"] = null;
+    let maxRivalryGames = 0;
+    for (const stat of rivalryStats.values()) {
+      if (stat.games > maxRivalryGames) {
+        maxRivalryGames = stat.games;
+        biggestRivalry = { name1: name(stat.id1), name2: name(stat.id2), games: stat.games };
+      }
+    }
+
+    return { topMmr, topWinrate, topStreak, bestDuo, biggestRivalry, mostActive };
   }
 
   // ---------- private helpers ----------

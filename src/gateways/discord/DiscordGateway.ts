@@ -64,6 +64,7 @@ type EphemeralResponse = Pick<InteractionReplyOptions, "content" | "embeds" | "c
 
 const READY_CHECK_TIMEOUT_MS = 120_000;
 const DUO_INVITE_TIMEOUT_MS = 60_000;
+const MESSAGE_CLEANUP_DELAY_MS = 8_000;
 const MATCHMAKING_QUALITY_THRESHOLD = 0.2;
 const MANAGED_CHANNEL_FETCH_LIMIT = 100;
 const CANCELLED_REQUEUE_WINDOW_MS = 60 * 60_000;
@@ -261,6 +262,14 @@ export class DiscordGateway {
         await this.handleNemesis(interaction);
         return;
 
+      case "top":
+        await this.handleTop(interaction);
+        return;
+
+      case "role-report":
+        await this.handleRoleReport(interaction);
+        return;
+
       case "won":
         await this.handleWonCommand(interaction);
         return;
@@ -451,6 +460,7 @@ export class DiscordGateway {
     await this.matchService.completeMatch(matchId, team);
     await this.deleteVoiceChannels(interaction.guild, matchId, matchContext.matchNumber);
     await this.refreshRankingChannels(matchContext.guildId);
+    await this.refreshTopChannels(matchContext.guildId);
     await this.refreshQueueChannels(matchContext.guildId);
     await interaction.editReply(
       `Partida ${formatMatchLabel(matchContext.matchNumber, matchId)} finalizada com vitoria do time ${renderTeamName(team)}.`,
@@ -700,6 +710,51 @@ export class DiscordGateway {
     await interaction.editReply({ embeds: [buildNemesisEmbed(target.displayName, nemesis)] });
   }
 
+  private async handleTop(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+    const highlights = await this.statsService.getServerHighlights(interaction.guildId);
+
+    if (!highlights) {
+      await interaction.editReply("Ainda nao ha partidas finalizadas neste servidor.");
+      return;
+    }
+
+    const { buildTopEmbed } = await import("./components.js");
+    await interaction.editReply({ embeds: [buildTopEmbed(highlights)] });
+  }
+
+  private async handleRoleReport(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+    const target = interaction.options.getUser("jogador") ?? interaction.user;
+    const user = await this.userService.getUserByPlatformId("discord", target.id);
+
+    if (!user) {
+      await interaction.editReply(`${target.displayName} ainda nao esta no sistema.`);
+      return;
+    }
+
+    const report = await this.statsService.getRoleReport(interaction.guildId, user.id);
+
+    if (!report) {
+      await interaction.editReply(`${target.displayName} ainda nao tem partidas finalizadas.`);
+      return;
+    }
+
+    const { buildRoleReportEmbed } = await import("./components.js");
+    const presentation = await this.presentationForGuild(interaction.guildId);
+    await interaction.editReply({ embeds: [buildRoleReportEmbed(target.displayName, report, presentation)] });
+  }
+
   private async handleRanking(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
       await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
@@ -713,7 +768,7 @@ export class DiscordGateway {
     const roleValue = interaction.options.getString("rota");
     const role = roleValue && isRole(roleValue) ? roleValue : undefined;
 
-    await interaction.deferReply();
+    await interaction.deferReply({ ephemeral: true });
     const entries = await this.statsService.getRanking(interaction.guildId, role, 100);
     if (entries.length === 0) {
       await interaction.editReply("Ainda nao ha partidas finalizadas para montar ranking.");
@@ -846,6 +901,7 @@ export class DiscordGateway {
         embeds: [],
         components: [],
       });
+      this.scheduleMessageDelete(interaction.message);
       return true;
     }
 
@@ -857,12 +913,12 @@ export class DiscordGateway {
         embeds: [],
         components: [],
       });
+      this.scheduleMessageDelete(interaction.message);
       return true;
     }
 
     const result = this.queueService.joinGroup(pending.channelId, [pending.requester, pending.target]);
     if (result.players) {
-      // Remove old entries before inserting new ones (swap behavior)
       await this.queueRepository.removeUserFromChannel(pending.channelId, pending.requester.userId);
       await this.queueRepository.removeUserFromChannel(pending.channelId, pending.target.userId);
       await this.queueRepository.upsertPlayers(result.players);
@@ -871,9 +927,10 @@ export class DiscordGateway {
     const presentation = await this.presentationForGuild(pending.guildId);
     await interaction.message.edit({
       content: "Duo aceito. Jogadores adicionados na fila.",
-      embeds: [buildQueueEmbed(result.snapshot, presentation)],
+      embeds: [],
       components: [],
     });
+    this.scheduleMessageDelete(interaction.message);
     await this.handleQueueJoinResult(
       pending.guildId,
       pending.channelId,
@@ -938,7 +995,7 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ ephemeral: false });
+    await interaction.deferReply({ ephemeral: true });
 
     const arg1 = interaction.options.getUser("jogador1");
     const arg2 = interaction.options.getUser("jogador2");
@@ -1139,8 +1196,10 @@ export class DiscordGateway {
       await interaction.deferUpdate();
       await interaction.message.edit({
         content: `Validacao da partida ${formatMatchLabel(pending.matchNumber, pending.matchId)} recusada por ${interaction.user.displayName}.`,
+        embeds: [],
         components: [],
       });
+      this.scheduleMessageDelete(interaction.message);
       return true;
     }
 
@@ -1167,6 +1226,7 @@ export class DiscordGateway {
       await this.deleteVoiceChannels(interaction.guild, pending.matchId, pending.matchNumber);
       if (interaction.guildId) {
         await this.refreshRankingChannels(interaction.guildId);
+        await this.refreshTopChannels(interaction.guildId);
         await this.refreshQueueChannels(interaction.guildId);
       }
     } else {
@@ -1185,6 +1245,7 @@ export class DiscordGateway {
         ? `Partida ${matchLabel} finalizada com vitoria do time ${renderTeamName(pending.winningTeam!)}.`
         : `Partida ${matchLabel} cancelada.`;
     await interaction.message.edit({ content: actionText, embeds: [], components: [] });
+    this.scheduleMessageDelete(interaction.message);
     await interaction.followUp({ content: "Validacao concluida.", ephemeral: true });
     return true;
   }
@@ -1206,15 +1267,18 @@ export class DiscordGateway {
       return;
     }
 
-    const channelType = action === "MARK_QUEUE" ? "QUEUE" : "RANKING";
+    const channelType = action === "MARK_QUEUE" ? "QUEUE" : action === "MARK_TOP" ? "TOP" : "RANKING";
     await this.guildService.markChannel(interaction.guildId, interaction.channelId, channelType);
+    const label = channelType === "QUEUE" ? "fila" : channelType === "TOP" ? "destaques" : "ranking";
     await interaction.reply({
-      content: `Canal marcado como ${channelType === "QUEUE" ? "fila" : "ranking"}.`,
+      content: `Canal marcado como ${label}.`,
       ephemeral: true,
     });
 
     if (channelType === "QUEUE") {
       await this.refreshQueueChannels(interaction.guildId);
+    } else if (channelType === "TOP") {
+      await this.refreshTopChannels(interaction.guildId);
     } else {
       await this.refreshRankingChannels(interaction.guildId);
     }
@@ -1317,6 +1381,7 @@ export class DiscordGateway {
     await this.matchService.completeMatch(match.matchId, match.team);
     await this.deleteVoiceChannels(interaction.guild, match.matchId, match.matchNumber);
     await this.refreshRankingChannels(interaction.guildId);
+    await this.refreshTopChannels(interaction.guildId);
     await this.refreshQueueChannels(interaction.guildId);
     await interaction.editReply(
       `Partida ${formatMatchLabel(match.matchNumber, match.matchId)} finalizada com vitoria do time ${renderTeamName(match.team)}.`,
@@ -1824,6 +1889,7 @@ export class DiscordGateway {
         embeds: [],
         components: [],
       });
+      this.scheduleChannelMessageDelete(pending.channelId, pending.messageId);
     }
   }
 
@@ -2023,6 +2089,7 @@ export class DiscordGateway {
   private async refreshGuildSurfaces(guildId: string): Promise<void> {
     await this.refreshQueueChannels(guildId);
     await this.refreshRankingChannels(guildId);
+    await this.refreshTopChannels(guildId);
   }
 
   private async refreshQueueChannels(guildId: string): Promise<void> {
@@ -2082,6 +2149,31 @@ export class DiscordGateway {
     }
   }
 
+  private async refreshTopChannels(guildId: string): Promise<void> {
+    const channels = await this.guildService.getMarkedChannels(guildId, "TOP");
+    if (channels.length === 0) {
+      return;
+    }
+
+    const highlights = await this.statsService.getServerHighlights(guildId);
+    if (!highlights) {
+      return;
+    }
+
+    const { buildTopEmbed } = await import("./components.js");
+    for (const marked of channels) {
+      const channel = await this.fetchTextChannel(marked.channelId);
+      if (!channel?.isSendable()) {
+        continue;
+      }
+
+      await this.clearManagedMessages(channel, (title) => title.includes("Destaques") || title.includes("Top"), {
+        deleteNonBotMessages: true,
+      });
+      await channel.send({ embeds: [buildTopEmbed(highlights)] });
+    }
+  }
+
   private async clearManagedMessages(
     channel: TextBasedChannel,
     shouldDeleteTitle: (title: string) => boolean,
@@ -2124,6 +2216,24 @@ export class DiscordGateway {
         }).catch(() => undefined);
       }
     }
+  }
+
+  private scheduleMessageDelete(message: { delete(): Promise<unknown> }): void {
+    setTimeout(() => {
+      message.delete().catch(() => undefined);
+    }, MESSAGE_CLEANUP_DELAY_MS);
+  }
+
+  private scheduleChannelMessageDelete(channelId: string, messageId: string): void {
+    setTimeout(() => {
+      this.fetchTextChannel(channelId)
+        .then((channel) => {
+          if (channel && "messages" in channel) {
+            return channel.messages.fetch(messageId).then((msg) => msg.delete());
+          }
+        })
+        .catch(() => undefined);
+    }, MESSAGE_CLEANUP_DELAY_MS);
   }
 
   private async editManagedMessage(

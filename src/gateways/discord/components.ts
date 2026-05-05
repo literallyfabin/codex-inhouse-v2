@@ -14,6 +14,8 @@ import type {
   MmrHistoryEntry,
   PlayerSummary,
   RankingEntry,
+  RoleReportResult,
+  ServerHighlights,
   SynergyNemesisResult,
 } from "../../services/statsService.js";
 import type { MatchSummary } from "../../services/matchService.js";
@@ -262,6 +264,17 @@ export const nemesisCommand = new SlashCommandBuilder()
     option.setName("jogador").setDescription("Ver o nemesis de outro jogador."),
   );
 
+export const topCommand = new SlashCommandBuilder()
+  .setName("top")
+  .setDescription("Mostra os destaques e recordes do servidor.");
+
+export const roleReportCommand = new SlashCommandBuilder()
+  .setName("role-report")
+  .setDescription("Mostra a distribuicao de roles que voce joga.")
+  .addUserOption((option) =>
+    option.setName("jogador").setDescription("Jogador alvo. Vazio mostra voce."),
+  );
+
 export const historyCommand = new SlashCommandBuilder()
   .setName("history")
   .setDescription("Mostra o historico de partidas.")
@@ -362,6 +375,7 @@ export const adminChannelCommand = new SlashCommandBuilder()
       .addChoices(
         { name: "Marcar como fila", value: "MARK_QUEUE" },
         { name: "Marcar como ranking", value: "MARK_RANKING" },
+        { name: "Marcar como top/destaques", value: "MARK_TOP" },
         { name: "Desmarcar", value: "UNMARK" },
       ),
   );
@@ -449,6 +463,8 @@ export const discordCommands = [
   championCommand,
   synergyCommand,
   nemesisCommand,
+  topCommand,
+  roleReportCommand,
   wonCommand,
   cancelCommand,
   remakeCommand,
@@ -1081,9 +1097,82 @@ export const buildNemesisEmbed = (
     .setColor(COLORS.softRed)
     .setDescription(
       `Seu maior inimigo e **${result.displayName}**.\n\n` +
-      `Voces se enfrentaram **${result.games}** vezes e ele te derrotou em **${result.wins}** delas.\n` +
-      `Ele tem **${(result.winrate * 100).toFixed(1)}%** de vitoria contra voce.`
+      `Voces se enfrentaram **${result.games}** vezes e **${result.displayName}** venceu **${result.wins}** delas.\n` +
+      `Taxa de vitoria contra voce: **${(result.winrate * 100).toFixed(1)}%**`
     );
+};
+
+export const buildRoleReportEmbed = (
+  displayName: string,
+  report: RoleReportResult,
+  presentation?: DiscordPresentation,
+): EmbedBuilder => {
+  const barLength = 12;
+  const roleLines = report.roles.map((r) => {
+    const filled = Math.max(0, Math.min(barLength, Math.round(r.percentage * barLength)));
+    const bar = `${"█".repeat(filled)}${"░".repeat(barLength - filled)}`;
+    const winrate = r.games > 0 ? Math.round((r.wins / r.games) * 100) : 0;
+    return `${roleIcon(r.role, presentation)} **${roleName[r.role]}** ${bar} **${Math.round(r.percentage * 100)}%** (${r.games} jogos, ${winrate}% WR)`;
+  });
+
+  const versatilityBar = `${progressBar(report.roles.length, ROLES.length)}`;
+  let versatilityLabel = "Especialista";
+  if (report.versatility >= 0.8) versatilityLabel = "Flexivel";
+  else if (report.versatility >= 0.6) versatilityLabel = "Variado";
+  else if (report.versatility >= 0.4) versatilityLabel = "Moderado";
+
+  return new EmbedBuilder()
+    .setColor(COLORS.blue)
+    .setTitle(`🎭 Role Pool — ${displayName}`)
+    .setDescription(
+      [
+        `**Total de partidas:** ${report.totalGames}`,
+        `**Roles jogadas:** ${report.roles.length}/${ROLES.length}`,
+        "",
+        ...roleLines,
+        "",
+        `**Versatilidade:** ${versatilityBar} ${Math.round(report.versatility * 100)}% — ${versatilityLabel}`,
+      ].join("\n"),
+    );
+};
+
+export const buildTopEmbed = (highlights: ServerHighlights): EmbedBuilder => {
+  const lines: string[] = [];
+
+  if (highlights.topMmr) {
+    lines.push(`🏆 **Maior MMR:** ${highlights.topMmr.displayName} — **${Math.round(highlights.topMmr.mmr)}** MMR`);
+  }
+
+  if (highlights.topWinrate) {
+    lines.push(
+      `🎯 **Maior Winrate:** ${highlights.topWinrate.displayName} — **${Math.round(highlights.topWinrate.winrate * 100)}%** (${highlights.topWinrate.games} jogos)`,
+    );
+  }
+
+  if (highlights.topStreak) {
+    lines.push(`🔥 **Maior Streak:** ${highlights.topStreak.displayName} — **${highlights.topStreak.streak}W** seguidas`);
+  }
+
+  if (highlights.mostActive) {
+    lines.push(`⚡ **Mais Ativo:** ${highlights.mostActive.displayName} — **${highlights.mostActive.games}** partidas`);
+  }
+
+  if (highlights.bestDuo) {
+    lines.push(
+      `🤝 **Melhor Dupla:** ${highlights.bestDuo.name1} + ${highlights.bestDuo.name2} — **${Math.round(highlights.bestDuo.winrate * 100)}%** WR (${highlights.bestDuo.games} jogos)`,
+    );
+  }
+
+  if (highlights.biggestRivalry) {
+    lines.push(
+      `⚔️ **Maior Rivalidade:** ${highlights.biggestRivalry.name1} vs ${highlights.biggestRivalry.name2} — **${highlights.biggestRivalry.games}** confrontos`,
+    );
+  }
+
+  return new EmbedBuilder()
+    .setColor(COLORS.gold)
+    .setTitle("📊 Destaques do Servidor")
+    .setDescription(lines.length > 0 ? lines.join("\n\n") : "*Ainda nao ha partidas suficientes.*");
 };
 
 export const buildValidationEmbed = (params: {
