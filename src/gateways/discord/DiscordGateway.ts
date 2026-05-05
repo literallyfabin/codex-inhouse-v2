@@ -716,7 +716,7 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ ephemeral: false });
     const highlights = await this.statsService.getServerHighlights(interaction.guildId);
 
     if (!highlights) {
