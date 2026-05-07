@@ -123,6 +123,21 @@ export interface ServerHighlights {
   mostActive: { displayName: string; games: number } | null;
 }
 
+export interface PlayerProfile {
+  displayName: string;
+  avatarUrl: string | null;
+  global: GlobalPlayerStats;
+  roles: PlayerRoleSummary[];
+  mainRole: Role | null;
+  tier: { name: string; emoji: string };
+  winrate: number;
+  streak: number; // positive = win, negative = loss
+  recentMatches: HistoryEntry[];
+  synergy: SynergyNemesisResult | null;
+  nemesis: SynergyNemesisResult | null;
+  roleReport: RoleReportResult | null;
+}
+
 const displayMmr = (stat: Pick<GlobalStatRow, "mu" | "sigma" | "mmr">): number =>
   Number.isFinite(stat.mmr) ? stat.mmr : conservativeMmr(stat.mu, stat.sigma);
 
@@ -768,5 +783,74 @@ export class StatsService {
   private async getLatestMatchIdForUser(guildId: string, userId: string): Promise<string | null> {
     const history = await this.getHistory(guildId, userId, 1);
     return history[0]?.matchId ?? null;
+  }
+
+  private getTier(mmr: number): { name: string; emoji: string } {
+    if (mmr >= 600) return { name: "Challenger", emoji: "👑" };
+    if (mmr >= 500) return { name: "Grão-Mestre", emoji: "⚜️" };
+    if (mmr >= 420) return { name: "Mestre", emoji: "🔮" };
+    if (mmr >= 360) return { name: "Diamante", emoji: "💎" };
+    if (mmr >= 300) return { name: "Esmeralda", emoji: "🟢" };
+    if (mmr >= 250) return { name: "Platina", emoji: "🔵" };
+    if (mmr >= 200) return { name: "Ouro", emoji: "🥇" };
+    if (mmr >= 150) return { name: "Prata", emoji: "🥈" };
+    if (mmr >= 100) return { name: "Bronze", emoji: "🥉" };
+    return { name: "Ferro", emoji: "⚙️" };
+  }
+
+  private computeStreak(history: HistoryEntry[]): number {
+    if (history.length === 0) return 0;
+    const first = history[0]!;
+    if (first.result !== "WIN" && first.result !== "LOSS") return 0;
+    const dir = first.result === "WIN" ? 1 : -1;
+    let count = 1;
+    for (let i = 1; i < history.length; i++) {
+      const entry = history[i]!;
+      if ((dir > 0 && entry.result === "WIN") || (dir < 0 && entry.result === "LOSS")) {
+        count++;
+      } else {
+        break;
+      }
+    }
+    return count * dir;
+  }
+
+  async getPlayerProfile(
+    guildId: string,
+    userId: string,
+    displayName: string,
+    avatarUrl: string | null,
+  ): Promise<PlayerProfile | null> {
+    const summary = await this.getPlayerSummary(guildId, userId);
+    if (!summary) return null;
+
+    const [history, synergy, nemesis, roleReport] = await Promise.all([
+      this.getHistory(guildId, userId, 20),
+      this.getSynergy(guildId, userId, 2),
+      this.getNemesis(guildId, userId, 2),
+      this.getRoleReport(guildId, userId),
+    ]);
+
+    const mainRole = summary.roles.reduce<PlayerRoleSummary | null>(
+      (best, r) => (r.games > (best?.games ?? 0) ? r : best),
+      null,
+    );
+
+    return {
+      displayName,
+      avatarUrl,
+      global: summary.global,
+      roles: summary.roles,
+      mainRole: mainRole?.role ?? null,
+      tier: this.getTier(summary.global.mmr),
+      winrate: summary.global.totalGames > 0
+        ? Math.round((summary.global.totalWins / summary.global.totalGames) * 100)
+        : 0,
+      streak: this.computeStreak(history),
+      recentMatches: history.slice(0, 5),
+      synergy,
+      nemesis,
+      roleReport,
+    };
   }
 }

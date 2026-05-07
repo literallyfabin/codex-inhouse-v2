@@ -270,6 +270,10 @@ export class DiscordGateway {
         await this.handleRoleReport(interaction);
         return;
 
+      case "perfil":
+        await this.handleProfile(interaction);
+        return;
+
       case "won":
         await this.handleWonCommand(interaction);
         return;
@@ -753,6 +757,38 @@ export class DiscordGateway {
     const { buildRoleReportEmbed } = await import("./components.js");
     const presentation = await this.presentationForGuild(interaction.guildId);
     await interaction.editReply({ embeds: [buildRoleReportEmbed(target.displayName, report, presentation)] });
+  }
+
+  private async handleProfile(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: false });
+    const target = interaction.options.getUser("jogador") ?? interaction.user;
+    const user = await this.userService.getUserByPlatformId("discord", target.id);
+
+    if (!user) {
+      await interaction.editReply(`${target.displayName} ainda nao esta no sistema.`);
+      return;
+    }
+
+    const profile = await this.statsService.getPlayerProfile(
+      interaction.guildId,
+      user.id,
+      target.displayName,
+      target.displayAvatarURL({ size: 256 }),
+    );
+
+    if (!profile) {
+      await interaction.editReply(`${target.displayName} ainda nao tem partidas finalizadas.`);
+      return;
+    }
+
+    const { buildProfileEmbed } = await import("./components.js");
+    const presentation = await this.presentationForGuild(interaction.guildId);
+    await interaction.editReply({ embeds: buildProfileEmbed(profile, presentation) });
   }
 
   private async handleRanking(interaction: ChatInputCommandInteraction): Promise<void> {

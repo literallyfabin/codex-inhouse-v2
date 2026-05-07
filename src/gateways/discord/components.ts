@@ -12,6 +12,7 @@ import type { QueueSnapshot } from "../../core/queue/QueueService.js";
 import type {
   HistoryEntry,
   MmrHistoryEntry,
+  PlayerProfile,
   PlayerSummary,
   RankingEntry,
   RoleReportResult,
@@ -275,6 +276,13 @@ export const roleReportCommand = new SlashCommandBuilder()
     option.setName("jogador").setDescription("Jogador alvo. Vazio mostra voce."),
   );
 
+export const profileCommand = new SlashCommandBuilder()
+  .setName("perfil")
+  .setDescription("Mostra o perfil completo de um jogador.")
+  .addUserOption((option) =>
+    option.setName("jogador").setDescription("Jogador alvo. Vazio mostra voce."),
+  );
+
 export const historyCommand = new SlashCommandBuilder()
   .setName("history")
   .setDescription("Mostra o historico de partidas.")
@@ -465,6 +473,7 @@ export const discordCommands = [
   nemesisCommand,
   topCommand,
   roleReportCommand,
+  profileCommand,
   wonCommand,
   cancelCommand,
   remakeCommand,
@@ -646,6 +655,25 @@ export const buildQueueEmbed = (
     embed.addFields({
       name: "Aguardando vaga",
       value: waitingPlayers.join("\n"),
+      inline: false,
+    });
+  }
+
+  // Role demand heatmap
+  const demandLines: string[] = [];
+  for (const role of ROLES) {
+    const count = snapshot.roles[role].length;
+    const max = 2;
+    if (count < max) {
+      const needed = max - count;
+      const heat = count === 0 ? "🔴" : "🟡";
+      demandLines.push(`${heat} ${roleIcon(role, presentation)} **${roleName[role]}** — falta${needed > 1 ? "m" : ""} **${needed}**`);
+    }
+  }
+  if (demandLines.length > 0 && snapshot.totalPlayers > 0 && !snapshot.isReady) {
+    embed.addFields({
+      name: "🗺️ Mapa de Demanda",
+      value: demandLines.join("\n"),
       inline: false,
     });
   }
@@ -1328,3 +1356,146 @@ export const buildAlreadyLinkedEmbed = (gameName: string, tagLine: string): Embe
     .setColor(COLORS.blue)
     .setTitle("🔗 Conta Já Vinculada")
     .setDescription(`Sua conta atual é **${gameName}#${tagLine}**.\n\nSe quiser trocar de conta, use \`/link-account\` novamente.`);
+
+// ── Profile Embed ──────────────────────────────────────────────────
+
+const tierColors: Record<string, number> = {
+  Challenger: 0xf1c40f,
+  "Grão-Mestre": 0xe74c3c,
+  Mestre: 0x9b59b6,
+  Diamante: 0x3498db,
+  Esmeralda: 0x2ecc71,
+  Platina: 0x1abc9c,
+  Ouro: 0xd4a72c,
+  Prata: 0x95a5a6,
+  Bronze: 0xcd7f32,
+  Ferro: 0x607d8b,
+};
+
+const streakText = (streak: number): string => {
+  if (streak === 0) return "Nenhuma sequência";
+  if (streak > 0) return `🔥 **${streak}** vitória${streak > 1 ? "s" : ""} seguida${streak > 1 ? "s" : ""}`;
+  const abs = Math.abs(streak);
+  return `❄️ **${abs}** derrota${abs > 1 ? "s" : ""} seguida${abs > 1 ? "s" : ""}`;
+};
+
+const mmrBar = (mmr: number): string => {
+  // Visual bar from 0 to 600 (challenger threshold)
+  const max = 600;
+  const filled = Math.max(0, Math.min(20, Math.round((mmr / max) * 20)));
+  return `${"█".repeat(filled)}${"░".repeat(20 - filled)}`;
+};
+
+export const buildProfileEmbed = (
+  profile: PlayerProfile,
+  presentation?: DiscordPresentation,
+): EmbedBuilder[] => {
+  const { global: g, tier, roles } = profile;
+  const color = tierColors[tier.name] ?? COLORS.gold;
+
+  // ── Main Card ──
+  const mainEmbed = new EmbedBuilder()
+    .setColor(color)
+    .setTitle(`${tier.emoji} ${profile.displayName}`)
+    .setThumbnail(
+      profile.avatarUrl ?? "https://media.tenor.com/On7kvXhzmV4AAAAj/loading-gif.gif",
+    );
+
+  // Header section
+  const rankDisplay = g.rank ? `#${g.rank}` : "—";
+  const headerLines = [
+    `# ${tier.emoji} ${tier.name}`,
+    "",
+    `> **MMR** \`${Math.round(g.mmr)}\` — **Rank** \`${rankDisplay}\``,
+    `> ${mmrBar(g.mmr)}`,
+    "",
+    `📊 **${g.totalGames}** jogos | ✅ **${g.totalWins}**V ❌ **${g.totalLosses}**D | 🎯 **${profile.winrate}%** WR`,
+    streakText(profile.streak),
+  ];
+
+  mainEmbed.setDescription(headerLines.join("\n"));
+
+  // Role breakdown field
+  if (roles.length > 0) {
+    const mainRoleText = profile.mainRole
+      ? `${roleIcon(profile.mainRole, presentation)} **${roleName[profile.mainRole]}**`
+      : "N/A";
+
+    const roleLines = roles.map((r) => {
+      const wr = r.games > 0 ? Math.round((r.wins / r.games) * 100) : 0;
+      const bar = progressBar(r.games, g.totalGames);
+      return `${roleIcon(r.role, presentation)} **${roleName[r.role]}** ${bar} ${r.games} jogos (${wr}% WR)`;
+    });
+
+    mainEmbed.addFields({
+      name: `🎮 Rota Principal: ${mainRoleText}`,
+      value: roleLines.join("\n"),
+      inline: false,
+    });
+  }
+
+  // Versatility
+  if (profile.roleReport) {
+    const vBar = progressBar(profile.roleReport.roles.length, ROLES.length);
+    let label = "Especialista";
+    if (profile.roleReport.versatility >= 0.8) label = "Flexível";
+    else if (profile.roleReport.versatility >= 0.6) label = "Variado";
+    else if (profile.roleReport.versatility >= 0.4) label = "Moderado";
+    mainEmbed.addFields({
+      name: "🎭 Versatilidade",
+      value: `${vBar} **${label}** (${profile.roleReport.roles.length}/${ROLES.length} roles)`,
+      inline: false,
+    });
+  }
+
+  // ── Social Card ──
+  const socialEmbed = new EmbedBuilder().setColor(color);
+
+  const socialLines: string[] = [];
+
+  if (profile.synergy) {
+    const wr = Math.round(profile.synergy.winrate * 100);
+    socialLines.push(
+      `🤝 **Melhor Duo:** ${profile.synergy.displayName}`,
+      `> ${profile.synergy.games} jogos juntos — **${wr}%** WR | ${profile.synergy.wins}V`,
+    );
+  }
+
+  if (profile.nemesis) {
+    const wr = Math.round(profile.nemesis.winrate * 100);
+    socialLines.push(
+      `⚔️ **Nemesis:** ${profile.nemesis.displayName}`,
+      `> ${profile.nemesis.games} confrontos — **${wr}%** vitórias do inimigo | ${profile.nemesis.wins}V`,
+    );
+  }
+
+  if (socialLines.length > 0) {
+    socialEmbed.setDescription(socialLines.join("\n"));
+  }
+
+  // Recent matches field
+  if (profile.recentMatches.length > 0) {
+    const matchLines = profile.recentMatches.map((entry) => {
+      const icon = entry.result === "WIN" ? "🟢" : entry.result === "LOSS" ? "🔴" : "⚪";
+      const champion = entry.championName ? ` (${entry.championName})` : "";
+      return `${icon} ${roleIcon(entry.role, presentation)}${champion} \`${Math.round(entry.mmrBefore)} MMR\``;
+    });
+
+    socialEmbed.addFields({
+      name: "📜 Últimas Partidas",
+      value: matchLines.join("\n"),
+      inline: false,
+    });
+  }
+
+  // Footer with animated gif as image
+  socialEmbed
+    .setImage("https://media.tenor.com/ZTJc_gDOuOIAAAAd/league-of-legends-lol.gif")
+    .setFooter({ text: `Perfil gerado • ${profile.displayName}` });
+
+  const embeds = [mainEmbed];
+  if (socialLines.length > 0 || profile.recentMatches.length > 0) {
+    embeds.push(socialEmbed);
+  }
+  return embeds;
+};
