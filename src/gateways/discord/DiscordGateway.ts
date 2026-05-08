@@ -274,6 +274,10 @@ export class DiscordGateway {
         await this.handleProfile(interaction);
         return;
 
+      case "demanda":
+        await this.handleDemand(interaction);
+        return;
+
       case "won":
         await this.handleWonCommand(interaction);
         return;
@@ -789,6 +793,25 @@ export class DiscordGateway {
     const { buildProfileEmbed } = await import("./components.js");
     const presentation = await this.presentationForGuild(interaction.guildId);
     await interaction.editReply({ embeds: buildProfileEmbed(profile, presentation) });
+  }
+
+  private async handleDemand(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: false });
+    const demand = await this.statsService.getRoleDemand(interaction.guildId);
+
+    if (!demand) {
+      await interaction.editReply("Ainda nao ha partidas finalizadas neste servidor.");
+      return;
+    }
+
+    const { buildDemandEmbed } = await import("./components.js");
+    const presentation = await this.presentationForGuild(interaction.guildId);
+    await interaction.editReply({ embeds: [buildDemandEmbed(demand, presentation)] });
   }
 
   private async handleRanking(interaction: ChatInputCommandInteraction): Promise<void> {

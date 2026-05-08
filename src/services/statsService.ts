@@ -123,6 +123,22 @@ export interface ServerHighlights {
   mostActive: { displayName: string; games: number } | null;
 }
 
+export interface RoleDemandEntry {
+  role: Role;
+  uniquePlayers: number;
+  totalPicks: number;
+  percentage: number; // share of total picks
+  avgWinrate: number;
+}
+
+export interface RoleDemand {
+  totalPlayers: number;
+  totalPicks: number;
+  roles: RoleDemandEntry[];
+  scarcest: Role;
+  mostPopular: Role;
+}
+
 export interface PlayerProfile {
   displayName: string;
   avatarUrl: string | null;
@@ -813,6 +829,61 @@ export class StatsService {
       }
     }
     return count * dir;
+  }
+
+  async getRoleDemand(guildId: string): Promise<RoleDemand | null> {
+    const matches = await this.getCompletedMatches(guildId);
+    if (matches.size === 0) return null;
+
+    const participants = await this.getParticipantsByMatchIds([...matches.keys()]);
+
+    // Per-role stats
+    const roleStats = new Map<Role, { players: Set<string>; picks: number; wins: number }>();
+    for (const role of ROLES) {
+      roleStats.set(role, { players: new Set(), picks: 0, wins: 0 });
+    }
+
+    const allPlayers = new Set<string>();
+    for (const p of participants) {
+      const match = matches.get(p.match_id);
+      if (!match || match.winning_team === "NONE") continue;
+      const role = p.role as Role;
+      const stat = roleStats.get(role);
+      if (!stat) continue;
+      stat.players.add(p.user_id);
+      stat.picks += 1;
+      if (match.winning_team === p.team) stat.wins += 1;
+      allPlayers.add(p.user_id);
+    }
+
+    const totalPicks = participants.filter((p) => {
+      const m = matches.get(p.match_id);
+      return m && m.winning_team !== "NONE";
+    }).length;
+
+    if (totalPicks === 0) return null;
+
+    const roles: RoleDemandEntry[] = ROLES.map((role) => {
+      const stat = roleStats.get(role)!;
+      return {
+        role,
+        uniquePlayers: stat.players.size,
+        totalPicks: stat.picks,
+        percentage: stat.picks / totalPicks,
+        avgWinrate: stat.picks > 0 ? stat.wins / stat.picks : 0,
+      };
+    }).sort((a, b) => a.totalPicks - b.totalPicks); // scarce first
+
+    const scarcest = roles[0]!.role;
+    const mostPopular = roles[roles.length - 1]!.role;
+
+    return {
+      totalPlayers: allPlayers.size,
+      totalPicks,
+      roles,
+      scarcest,
+      mostPopular,
+    };
   }
 
   async getPlayerProfile(

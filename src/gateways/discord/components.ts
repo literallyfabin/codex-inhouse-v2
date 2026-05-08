@@ -15,6 +15,7 @@ import type {
   PlayerProfile,
   PlayerSummary,
   RankingEntry,
+  RoleDemand,
   RoleReportResult,
   ServerHighlights,
   SynergyNemesisResult,
@@ -276,6 +277,10 @@ export const roleReportCommand = new SlashCommandBuilder()
     option.setName("jogador").setDescription("Jogador alvo. Vazio mostra voce."),
   );
 
+export const demandCommand = new SlashCommandBuilder()
+  .setName("demanda")
+  .setDescription("Mostra a distribuicao de roles do servidor e quais precisam de mais jogadores.");
+
 export const profileCommand = new SlashCommandBuilder()
   .setName("perfil")
   .setDescription("Mostra o perfil completo de um jogador.")
@@ -474,6 +479,7 @@ export const discordCommands = [
   topCommand,
   roleReportCommand,
   profileCommand,
+  demandCommand,
   wonCommand,
   cancelCommand,
   remakeCommand,
@@ -655,25 +661,6 @@ export const buildQueueEmbed = (
     embed.addFields({
       name: "Aguardando vaga",
       value: waitingPlayers.join("\n"),
-      inline: false,
-    });
-  }
-
-  // Role demand heatmap
-  const demandLines: string[] = [];
-  for (const role of ROLES) {
-    const count = snapshot.roles[role].length;
-    const max = 2;
-    if (count < max) {
-      const needed = max - count;
-      const heat = count === 0 ? "🔴" : "🟡";
-      demandLines.push(`${heat} ${roleIcon(role, presentation)} **${roleName[role]}** — falta${needed > 1 ? "m" : ""} **${needed}**`);
-    }
-  }
-  if (demandLines.length > 0 && snapshot.totalPlayers > 0 && !snapshot.isReady) {
-    embed.addFields({
-      name: "🗺️ Mapa de Demanda",
-      value: demandLines.join("\n"),
       inline: false,
     });
   }
@@ -1356,6 +1343,46 @@ export const buildAlreadyLinkedEmbed = (gameName: string, tagLine: string): Embe
     .setColor(COLORS.blue)
     .setTitle("🔗 Conta Já Vinculada")
     .setDescription(`Sua conta atual é **${gameName}#${tagLine}**.\n\nSe quiser trocar de conta, use \`/link-account\` novamente.`);
+
+// ── Role Demand Embed ──────────────────────────────────────────────
+
+export const buildDemandEmbed = (
+  demand: RoleDemand,
+  presentation?: DiscordPresentation,
+): EmbedBuilder => {
+  const maxPicks = Math.max(...demand.roles.map((r) => r.totalPicks), 1);
+
+  const roleLines = demand.roles.map((r) => {
+    const barLen = 15;
+    const filled = Math.max(0, Math.round((r.totalPicks / maxPicks) * barLen));
+    const bar = `${"█".repeat(filled)}${"░".repeat(barLen - filled)}`;
+    const wr = Math.round(r.avgWinrate * 100);
+    const pct = Math.round(r.percentage * 100);
+    const heat = r.role === demand.scarcest ? "🔴" : r.role === demand.mostPopular ? "🟢" : "🟡";
+    return `${heat} ${roleIcon(r.role, presentation)} **${roleName[r.role]}** ${bar} **${pct}%**\n> ${r.totalPicks} picks · ${r.uniquePlayers} jogadores · ${wr}% WR`;
+  });
+
+  // Sort scarce first is already done in service
+  const scarceLine = `🔴 **Mais escassa:** ${roleIcon(demand.scarcest, presentation)} **${roleName[demand.scarcest]}**`;
+  const popularLine = `🟢 **Mais popular:** ${roleIcon(demand.mostPopular, presentation)} **${roleName[demand.mostPopular]}**`;
+
+  return new EmbedBuilder()
+    .setColor(COLORS.blue)
+    .setTitle("🗺️ Mapa de Demanda — Roles do Servidor")
+    .setDescription(
+      [
+        `**${demand.totalPlayers}** jogadores · **${demand.totalPicks}** picks totais`,
+        "",
+        ...roleLines,
+        "",
+        scarceLine,
+        popularLine,
+        "",
+        `> 💡 O servidor precisa de mais jogadores de **${roleName[demand.scarcest]}**!`,
+      ].join("\n"),
+    )
+    .setFooter({ text: "Baseado em todas as partidas finalizadas." });
+};
 
 // ── Profile Embed ──────────────────────────────────────────────────
 
