@@ -1227,6 +1227,18 @@ export const buildTopEmbed = (highlights: ServerHighlights): EmbedBuilder => {
     );
   }
 
+  if (highlights.bestFill) {
+    lines.push(
+      `🌟 **Melhor Fill:** ${highlights.bestFill.displayName} — **${Math.round(highlights.bestFill.winrate * 100)}%** WR (${highlights.bestFill.games} fills)`,
+    );
+  }
+
+  if (highlights.worstFill) {
+    lines.push(
+      `💀 **Pior Fill:** ${highlights.worstFill.displayName} — **${Math.round(highlights.worstFill.winrate * 100)}%** WR (${highlights.worstFill.games} fills)`,
+    );
+  }
+
   return new EmbedBuilder()
     .setColor(COLORS.gold)
     .setTitle("📊 Destaques do Servidor")
@@ -1393,38 +1405,37 @@ export const buildDemandEmbed = (
   demand: RoleDemand,
   presentation?: DiscordPresentation,
 ): EmbedBuilder => {
-  const maxPicks = Math.max(...demand.roles.map((r) => r.totalPicks), 1);
+  const maxPlayers = Math.max(...demand.roles.map((r) => r.uniquePlayers), 1);
 
   const roleLines = demand.roles.map((r) => {
     const barLen = 15;
-    const filled = Math.max(0, Math.round((r.totalPicks / maxPicks) * barLen));
+    const filled = Math.max(0, Math.round((r.uniquePlayers / maxPlayers) * barLen));
     const bar = `${"█".repeat(filled)}${"░".repeat(barLen - filled)}`;
     const wr = Math.round(r.avgWinrate * 100);
-    const pct = Math.round(r.percentage * 100);
     const heat = r.role === demand.scarcest ? "🔴" : r.role === demand.mostPopular ? "🟢" : "🟡";
-    return `${heat} ${roleIcon(r.role, presentation)} **${roleName[r.role]}** ${bar} **${pct}%**\n> ${r.totalPicks} picks · ${r.uniquePlayers} jogadores · ${wr}% WR`;
+    return `${heat} ${roleIcon(r.role, presentation)} **${roleName[r.role]}** ${bar} **${r.uniquePlayers}** jogadores\n> ${r.totalPicks} picks · ${wr}% WR média`;
   });
 
-  // Sort scarce first is already done in service
-  const scarceLine = `🔴 **Mais escassa:** ${roleIcon(demand.scarcest, presentation)} **${roleName[demand.scarcest]}**`;
-  const popularLine = `🟢 **Mais popular:** ${roleIcon(demand.mostPopular, presentation)} **${roleName[demand.mostPopular]}**`;
+  // Already sorted scarcest → most popular in service
+  const scarceLine = `🔴 **Menos jogadores:** ${roleIcon(demand.scarcest, presentation)} **${roleName[demand.scarcest]}**`;
+  const popularLine = `🟢 **Mais jogadores:** ${roleIcon(demand.mostPopular, presentation)} **${roleName[demand.mostPopular]}**`;
 
   return new EmbedBuilder()
     .setColor(COLORS.blue)
     .setTitle("🗺️ Mapa de Demanda — Roles do Servidor")
     .setDescription(
       [
-        `**${demand.totalPlayers}** jogadores · **${demand.totalPicks}** picks totais`,
+        `**${demand.totalPlayers}** jogadores únicos no servidor`,
         "",
         ...roleLines,
         "",
         scarceLine,
         popularLine,
         "",
-        `> 💡 O servidor precisa de mais jogadores de **${roleName[demand.scarcest]}**!`,
+        `> 💡 O servidor precisa de mais jogadores de **${roleName[demand.scarcest]}**! Entrar como **Fill** ajuda a equilibrar.`,
       ].join("\n"),
     )
-    .setFooter({ text: "Baseado em todas as partidas finalizadas." });
+    .setFooter({ text: "Baseado em jogadores únicos por role em partidas finalizadas." });
 };
 
 // ── Profile Embed ──────────────────────────────────────────────────

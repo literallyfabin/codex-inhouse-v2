@@ -31,6 +31,7 @@ const participantPayload = (matchId: string, match: BalancedMatch) =>
     mu_before: slot.player.rating.mu,
     sigma_before: slot.player.rating.sigma,
     display_name: slot.player.displayName,
+    joined_as_fill: slot.player.joinedAsFill ?? false,
   }));
 
 const mapPersistedMatch = (row: {
@@ -282,7 +283,7 @@ export class MatchService {
 
     const { data: participantRows, error: participantsError } = await supabase
       .from("match_participants")
-      .select("user_id, role, team, mu_before, sigma_before, display_name")
+      .select("user_id, role, team, mu_before, sigma_before, display_name, joined_as_fill")
       .eq("match_id", matchId);
 
     if (participantsError) {
@@ -612,6 +613,7 @@ export class MatchService {
       mu_before: number;
       sigma_before: number;
       display_name: string | null;
+      joined_as_fill?: boolean;
     }[],
   ): BalancedMatch {
     const toSlot = (row: (typeof rows)[number]) => ({
@@ -626,6 +628,7 @@ export class MatchService {
         displayName: row.display_name ?? row.user_id,
         role: row.role,
         joinedAt: new Date(0),
+        joinedAsFill: row.joined_as_fill ?? false,
         rating: {
           guildId: "loaded-from-match",
           userId: row.user_id,

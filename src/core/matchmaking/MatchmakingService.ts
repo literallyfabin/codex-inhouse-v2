@@ -123,21 +123,26 @@ const getWinningAndLosingSlots = (
 const STREAK_PROTECTION_THRESHOLD = 3;
 const STREAK_PROTECTION_MU_BOOST_PER_LOSS = 0.5;
 
+/** FILL players get amplified MMR changes. Win more, lose more. */
+const FILL_MULTIPLIER = 1.5;
+
 const applyStreakProtection = (
   players: readonly RatedQueuePlayer[],
 ): RatedQueuePlayer[] =>
   players.map((player) => {
     const streak = player.streak ?? 0;
     if (streak >= -STREAK_PROTECTION_THRESHOLD + 1) return player;
-    // Negative streak beyond threshold → boost mu for balancing
+    // Loss streak beyond threshold → SUBTRACT mu for balancing purposes only.
+    // Algorithm sees player as weaker → pairs them with STRONGER teammates → wins more.
     const lossesOverThreshold = Math.abs(streak) - STREAK_PROTECTION_THRESHOLD + 1;
-    const boost = lossesOverThreshold * STREAK_PROTECTION_MU_BOOST_PER_LOSS;
+    const penalty = lossesOverThreshold * STREAK_PROTECTION_MU_BOOST_PER_LOSS;
+    const adjustedMu = player.rating.mu - penalty;
     return {
       ...player,
       rating: {
         ...player.rating,
-        mu: player.rating.mu + boost,
-        mmr: conservativeMmr(player.rating.mu + boost, player.rating.sigma),
+        mu: adjustedMu,
+        mmr: conservativeMmr(adjustedMu, player.rating.sigma),
       },
     };
   });
@@ -216,15 +221,30 @@ export class MatchmakingService {
         throw new Error("TrueSkill returned an unexpected number of ratings.");
       }
 
+      const prevMu = slot.player.rating.mu;
+      const prevSigma = slot.player.rating.sigma;
+      let finalMu = nextRating.mu;
+      let finalSigma = nextRating.sigma;
+
+      // FILL bonus: amplify mu delta by FILL_MULTIPLIER.
+      // Win as FILL = bigger mu gain. Loss as FILL = bigger mu loss.
+      if (slot.player.joinedAsFill) {
+        const muDelta = nextRating.mu - prevMu;
+        const sigmaDelta = nextRating.sigma - prevSigma;
+        finalMu = prevMu + muDelta * FILL_MULTIPLIER;
+        // Sigma also moves more (FILL playing off-role = more uncertainty/information)
+        finalSigma = prevSigma + sigmaDelta * FILL_MULTIPLIER;
+      }
+
       return {
         guildId: slot.player.guildId,
         userId: slot.player.userId,
         role: slot.role,
-        previousMu: slot.player.rating.mu,
-        previousSigma: slot.player.rating.sigma,
-        mu: nextRating.mu,
-        sigma: nextRating.sigma,
-        mmr: conservativeMmr(nextRating.mu, nextRating.sigma),
+        previousMu: prevMu,
+        previousSigma: prevSigma,
+        mu: finalMu,
+        sigma: finalSigma,
+        mmr: conservativeMmr(finalMu, finalSigma),
       };
     });
   }

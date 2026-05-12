@@ -1940,7 +1940,7 @@ export class DiscordGateway {
     for (const { role, count } of roleNeeds) {
       const needed = 2 - count;
       for (let i = 0; i < needed && fillIdx < fillPlayers.length; i++) {
-        resolved.push({ ...fillPlayers[fillIdx]!, role });
+        resolved.push({ ...fillPlayers[fillIdx]!, role, joinedAsFill: true });
         fillIdx++;
       }
     }

@@ -158,6 +158,7 @@ export interface Database {
           mmr_before: number;
           display_name: string | null;
           champion_name: string | null;
+          joined_as_fill: boolean;
         };
         Insert: {
           match_id: string;
@@ -168,11 +169,13 @@ export interface Database {
           sigma_before: number;
           display_name?: string | null;
           champion_name?: string | null;
+          joined_as_fill?: boolean;
         };
         Update: {
           mu_before?: number;
           sigma_before?: number;
           champion_name?: string | null;
+          joined_as_fill?: boolean;
         };
         Relationships: [];
       };

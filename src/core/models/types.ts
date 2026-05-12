@@ -26,6 +26,8 @@ export interface QueuePlayer extends PlatformIdentity {
   duoUserId?: string | null;
   readyCheckId?: string | null;
   joinedAt: Date;
+  /** True if player entered queue as FILL (even if resolved to specific role for the match). */
+  joinedAsFill?: boolean;
 }
 
 export interface PlayerRating {

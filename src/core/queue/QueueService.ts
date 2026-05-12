@@ -468,7 +468,7 @@ export class QueueService {
     for (const { role, needed } of roleNeeds) {
       for (let i = 0; i < needed && fillIndex < fillPlayers.length; i++) {
         const fillPlayer = fillPlayers[fillIndex]!;
-        resolvedPlayers.push({ ...fillPlayer, role });
+        resolvedPlayers.push({ ...fillPlayer, role, joinedAsFill: true });
         fillIndex++;
       }
     }

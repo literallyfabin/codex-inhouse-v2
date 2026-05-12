@@ -23,6 +23,7 @@ interface ParticipantRow {
   mmr_before: number;
   champion_name: string | null;
   display_name: string | null;
+  joined_as_fill: boolean;
 }
 
 interface GlobalStatRow {
@@ -121,6 +122,8 @@ export interface ServerHighlights {
   bestDuo: { name1: string; name2: string; winrate: number; games: number } | null;
   biggestRivalry: { name1: string; name2: string; games: number } | null;
   mostActive: { displayName: string; games: number } | null;
+  bestFill: { displayName: string; winrate: number; games: number } | null;
+  worstFill: { displayName: string; winrate: number; games: number } | null;
 }
 
 export interface RoleDemandEntry {
@@ -680,7 +683,41 @@ export class StatsService {
       }
     }
 
-    return { topMmr, topWinrate, topStreak, bestDuo, biggestRivalry, mostActive };
+    // --- Best/Worst FILL ---
+    const fillRecords = new Map<string, { games: number; wins: number }>();
+    for (const p of participants) {
+      if (!p.joined_as_fill) continue;
+      const match = matches.get(p.match_id);
+      if (!match || match.winning_team === "NONE") continue;
+      const rec = fillRecords.get(p.user_id) ?? { games: 0, wins: 0 };
+      rec.games += 1;
+      if (match.winning_team === p.team) rec.wins += 1;
+      fillRecords.set(p.user_id, rec);
+    }
+
+    let bestFill: ServerHighlights["bestFill"] = null;
+    let worstFill: ServerHighlights["worstFill"] = null;
+    let bestFillScore = -1;
+    let worstFillScore = 2;
+    const MIN_FILL_GAMES = 2;
+    for (const [userId, rec] of fillRecords) {
+      if (rec.games < MIN_FILL_GAMES) continue;
+      const wr = rec.wins / rec.games;
+      // Best: prefer high winrate, then more games
+      const bScore = wr * 1000 + rec.games;
+      if (bScore > bestFillScore && rec.wins > 0) {
+        bestFillScore = bScore;
+        bestFill = { displayName: name(userId), winrate: wr, games: rec.games };
+      }
+      // Worst: prefer low winrate, then more games (more proof of suffering)
+      const wScore = wr - rec.games / 1000;
+      if (wScore < worstFillScore && rec.wins < rec.games) {
+        worstFillScore = wScore;
+        worstFill = { displayName: name(userId), winrate: wr, games: rec.games };
+      }
+    }
+
+    return { topMmr, topWinrate, topStreak, bestDuo, biggestRivalry, mostActive, bestFill, worstFill };
   }
 
   // ---------- private helpers ----------
@@ -711,7 +748,7 @@ export class StatsService {
   private async getParticipantRowsForUser(userId: string): Promise<ParticipantRow[]> {
     const { data, error } = await supabase
       .from("match_participants")
-      .select("match_id, user_id, role, team, mu_before, sigma_before, mmr_before, champion_name, display_name")
+      .select("match_id, user_id, role, team, mu_before, sigma_before, mmr_before, champion_name, display_name, joined_as_fill")
       .eq("user_id", userId);
 
     if (error) throw new Error(`Failed to load match participants: ${error.message}`);
@@ -723,7 +760,7 @@ export class StatsService {
 
     const { data, error } = await supabase
       .from("match_participants")
-      .select("match_id, user_id, role, team, mu_before, sigma_before, mmr_before, champion_name, display_name")
+      .select("match_id, user_id, role, team, mu_before, sigma_before, mmr_before, champion_name, display_name, joined_as_fill")
       .in("match_id", [...matchIds]);
 
     if (error) throw new Error(`Failed to load match participants: ${error.message}`);
@@ -863,16 +900,20 @@ export class StatsService {
 
     if (totalPicks === 0) return null;
 
+    // Total unique players across all roles (sum, since same player counted per role they play)
+    const totalRolePlayers = ROLES.reduce((sum, role) => sum + roleStats.get(role)!.players.size, 0);
+
     const roles: RoleDemandEntry[] = ROLES.map((role) => {
       const stat = roleStats.get(role)!;
       return {
         role,
         uniquePlayers: stat.players.size,
         totalPicks: stat.picks,
-        percentage: stat.picks / totalPicks,
+        // Share of unique players willing to play this role (vs total slots filled across all roles)
+        percentage: totalRolePlayers > 0 ? stat.players.size / totalRolePlayers : 0,
         avgWinrate: stat.picks > 0 ? stat.wins / stat.picks : 0,
       };
-    }).sort((a, b) => a.totalPicks - b.totalPicks); // scarce first
+    }).sort((a, b) => a.uniquePlayers - b.uniquePlayers); // scarcest (fewest players) first
 
     const scarcest = roles[0]!.role;
     const mostPopular = roles[roles.length - 1]!.role;
