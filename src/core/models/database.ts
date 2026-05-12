@@ -1,4 +1,4 @@
-import type { MatchStatus, Role, Team, WinningTeam } from "./types.js";
+import type { MatchStatus, QueueRole, Role, Team, WinningTeam } from "./types.js";
 
 export type Json =
   | string
@@ -224,7 +224,7 @@ export interface Database {
           guild_id: string;
           channel_id: string;
           user_id: string;
-          role: Role;
+          role: QueueRole;
           display_name: string;
           joined_at: string;
           duo_user_id: string | null;
@@ -236,7 +236,7 @@ export interface Database {
           guild_id: string;
           channel_id: string;
           user_id: string;
-          role: Role;
+          role: QueueRole;
           display_name: string;
           joined_at?: string;
           duo_user_id?: string | null;

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { PlatformIdentity, QueuePlayer, Role } from "../models/types.js";
+import type { PlatformIdentity, QueuePlayer, QueueRole, Role } from "../models/types.js";
 import { ROLES } from "../models/types.js";
 
 export interface QueueSnapshot {
@@ -7,6 +7,7 @@ export interface QueueSnapshot {
   totalPlayers: number;
   capacity: number;
   roles: Record<Role, QueuePlayer[]>;
+  fillPlayers: QueuePlayer[];
   message: string;
   isReady: boolean;
 }
@@ -17,7 +18,7 @@ type QueueIdentity = PlatformIdentity & {
   guildId: string;
   channelId: string;
   userId: string;
-  role: Role;
+  role: QueueRole;
   duoUserId?: string | null;
   joinedAt?: Date;
 };
@@ -98,8 +99,10 @@ export class QueueService {
 
     const snapshot = this.snapshot(queueId, nextQueue);
     const matchPlayers = this.selectMatchPlayers(nextQueue);
-    if ((queue.filter((player) => player.role === identity.role).length < 2) && snapshot.roles[identity.role].length === 2) {
-      this.events.emit("roleFilled", { queueId, role: identity.role, snapshot });
+    if (identity.role !== "FILL") {
+      if ((queue.filter((player) => player.role === identity.role).length < 2) && snapshot.roles[identity.role].length === 2) {
+        this.events.emit("roleFilled", { queueId, role: identity.role, snapshot });
+      }
     }
 
     if (matchPlayers) {
@@ -326,18 +329,37 @@ export class QueueService {
     for (const role of ROLES) {
       roles[role] = visibleQueue.filter((player) => player.role === role);
     }
+    const fillPlayers = visibleQueue.filter((player) => player.role === "FILL");
 
     const totalPlayers = visibleQueue.length;
     const roleSummary = ROLES.map((role) => `${role}: ${roles[role].length}/2`).join(", ");
+    const fillSuffix = fillPlayers.length > 0 ? `, FILL: ${fillPlayers.length}` : "";
 
     return {
       queueId,
       totalPlayers,
       capacity: 10,
       roles,
-      message: `Fila atualizada: ${totalPlayers}/10. ${roleSummary}.`,
-      isReady: totalPlayers >= 10 && ROLES.every((role) => roles[role].length >= 2),
+      fillPlayers,
+      message: `Fila atualizada: ${totalPlayers}/10. ${roleSummary}${fillSuffix}.`,
+      isReady: this.canFormMatch(visibleQueue),
     };
+  }
+
+  /**
+   * Returns true when the queue has enough players to form a complete 10-player match.
+   * FILL players can cover any role that still needs players.
+   */
+  private canFormMatch(queue: readonly QueuePlayer[]): boolean {
+    if (queue.length < 10) return false;
+    const fillCount = queue.filter((p) => p.role === "FILL").length;
+    let needed = 0;
+    for (const role of ROLES) {
+      const roleCount = queue.filter((p) => p.role === role).length;
+      const missing = Math.max(0, 2 - roleCount);
+      needed += missing;
+    }
+    return needed <= fillCount;
   }
 
   reset(queueId?: string): void {
@@ -373,17 +395,29 @@ export class QueueService {
 
   private selectMatchPlayers(queue: readonly QueuePlayer[]): QueuePlayer[] | undefined {
     const selectableQueue = this.buildLegacyOrderedQueue(queue);
+
+    // Try without FILL first (original logic)
+    const withoutFill = this.selectMatchPlayersFromPool(
+      selectableQueue.filter((p) => p.role !== "FILL"),
+    );
+    if (withoutFill) return withoutFill;
+
+    // Try resolving FILL players into needed roles
+    return this.selectMatchPlayersWithFill(selectableQueue);
+  }
+
+  private selectMatchPlayersFromPool(pool: readonly QueuePlayer[]): QueuePlayer[] | undefined {
     const roles = createEmptyRoles();
     for (const role of ROLES) {
-      roles[role] = selectableQueue.filter((player) => player.role === role);
+      roles[role] = pool.filter((player) => player.role === role);
       if (roles[role].length < 2) {
         return undefined;
       }
     }
 
-    for (let poolSize = 10; poolSize <= selectableQueue.length; poolSize += 1) {
-      const pool = selectableQueue.slice(0, poolSize);
-      const rolePairs = ROLES.map((role) => this.twoPlayerCombinations(pool.filter((player) => player.role === role)));
+    for (let poolSize = 10; poolSize <= pool.length; poolSize += 1) {
+      const subPool = pool.slice(0, poolSize);
+      const rolePairs = ROLES.map((role) => this.twoPlayerCombinations(subPool.filter((player) => player.role === role)));
       if (rolePairs.some((pairs) => pairs.length === 0)) {
         continue;
       }
@@ -393,6 +427,71 @@ export class QueueService {
           return selected;
         }
       }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Resolve FILL players into roles that need them.
+   * FILL players are assigned to the scarcest roles (fewest players first).
+   * Never displaces existing role players.
+   */
+  private selectMatchPlayersWithFill(queue: readonly QueuePlayer[]): QueuePlayer[] | undefined {
+    const rolePlayers = createEmptyRoles();
+    const fillPlayers: QueuePlayer[] = [];
+
+    for (const player of queue) {
+      if (player.role === "FILL") {
+        fillPlayers.push(player);
+      } else {
+        rolePlayers[player.role].push(player);
+      }
+    }
+
+    // Count how many extra players each role needs
+    const roleNeeds: { role: Role; needed: number }[] = ROLES.map((role) => ({
+      role,
+      needed: Math.max(0, 2 - rolePlayers[role].length),
+    }))
+      .filter((r) => r.needed > 0)
+      .sort((a, b) => b.needed - a.needed); // most needed first
+
+    let totalNeeded = roleNeeds.reduce((sum, r) => sum + r.needed, 0);
+    if (totalNeeded > fillPlayers.length) return undefined;
+    if (totalNeeded === 0 && fillPlayers.length === 0) return undefined;
+
+    // Assign FILL players to needed roles (FIFO order — earliest fill gets first pick)
+    const resolvedPlayers: QueuePlayer[] = [];
+    let fillIndex = 0;
+
+    for (const { role, needed } of roleNeeds) {
+      for (let i = 0; i < needed && fillIndex < fillPlayers.length; i++) {
+        const fillPlayer = fillPlayers[fillIndex]!;
+        resolvedPlayers.push({ ...fillPlayer, role });
+        fillIndex++;
+      }
+    }
+
+    // If there are remaining fill players and some roles have <2 from resolved, they go to leftover roles
+    // But we only need exactly 10 players total
+    const combined = [
+      ...ROLES.flatMap((role) => rolePlayers[role].slice(0, 2)),
+      ...resolvedPlayers,
+    ];
+
+    // Trim to first 2 per role
+    const finalRoles = createEmptyRoles();
+    for (const player of combined) {
+      if (player.role === "FILL") continue; // shouldn't happen after resolution
+      if (finalRoles[player.role as Role].length < 2) {
+        finalRoles[player.role as Role].push(player);
+      }
+    }
+
+    const finalPlayers = ROLES.flatMap((role) => finalRoles[role]);
+    if (this.isValidMatchSelection(finalPlayers)) {
+      return finalPlayers;
     }
 
     return undefined;
@@ -430,7 +529,7 @@ export class QueueService {
             candidate.duoUserId === player.userId &&
             candidate.channelId === player.channelId,
         );
-        if (!duo) {
+        if (!duo || duo.role === "FILL") {
           continue;
         }
 
@@ -447,6 +546,7 @@ export class QueueService {
 
     const startingPlayers = ROLES.flatMap((role) => startingQueue[role]);
     const startingKeys = new Set(startingPlayers.map(queueEntryKey));
+    // FILL players and overflow go at the end
     return [
       ...startingPlayers,
       ...visibleQueue.filter((player) => !startingKeys.has(queueEntryKey(player))),

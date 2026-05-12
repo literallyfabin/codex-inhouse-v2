@@ -119,9 +119,53 @@ const getWinningAndLosingSlots = (
     ? [match.teamBlue, match.teamRed]
     : [match.teamRed, match.teamBlue];
 
+/** Streak protection: mu boost per loss beyond threshold. */
+const STREAK_PROTECTION_THRESHOLD = 3;
+const STREAK_PROTECTION_MU_BOOST_PER_LOSS = 0.5;
+
+const applyStreakProtection = (
+  players: readonly RatedQueuePlayer[],
+): RatedQueuePlayer[] =>
+  players.map((player) => {
+    const streak = player.streak ?? 0;
+    if (streak >= -STREAK_PROTECTION_THRESHOLD + 1) return player;
+    // Negative streak beyond threshold → boost mu for balancing
+    const lossesOverThreshold = Math.abs(streak) - STREAK_PROTECTION_THRESHOLD + 1;
+    const boost = lossesOverThreshold * STREAK_PROTECTION_MU_BOOST_PER_LOSS;
+    return {
+      ...player,
+      rating: {
+        ...player.rating,
+        mu: player.rating.mu + boost,
+        mmr: conservativeMmr(player.rating.mu + boost, player.rating.sigma),
+      },
+    };
+  });
+
+const restoreOriginalRatings = (
+  match: BalancedMatch,
+  originals: ReadonlyMap<string, RatedQueuePlayer>,
+): BalancedMatch => ({
+  ...match,
+  teamBlue: match.teamBlue.map((slot) => {
+    const orig = originals.get(slot.player.userId);
+    return orig ? { ...slot, player: { ...slot.player, rating: orig.rating } } : slot;
+  }),
+  teamRed: match.teamRed.map((slot) => {
+    const orig = originals.get(slot.player.userId);
+    return orig ? { ...slot, player: { ...slot.player, rating: orig.rating } } : slot;
+  }),
+});
+
 export class MatchmakingService {
   balance(players: readonly RatedQueuePlayer[]): BalancedMatch {
-    const candidates = allRoleAssignments(assertCompleteRoleSet(players));
+    // Save originals before streak boost
+    const originals = new Map(players.map((p) => [p.userId, p]));
+
+    // Apply streak protection: boosted mu for balancing only
+    const boostedPlayers = applyStreakProtection(players);
+
+    const candidates = allRoleAssignments(assertCompleteRoleSet(boostedPlayers));
     const best = candidates.sort((left, right) => {
       const byMu = left.muDifference - right.muDifference;
       if (byMu !== 0) {
@@ -135,7 +179,10 @@ export class MatchmakingService {
       throw new Error("No valid match candidate found.");
     }
 
-    return best;
+    // Restore original ratings so persisted data isn't affected
+    const restored = restoreOriginalRatings(best, originals);
+    // Recalculate stats with real ratings
+    return finalizeCandidate(restored);
   }
 
   calculateUpdatedRatings(

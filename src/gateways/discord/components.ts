@@ -6,7 +6,7 @@ import {
   SlashCommandBuilder,
   type MessageActionRowComponentBuilder,
 } from "discord.js";
-import type { BalancedMatch, QueuePlayer, Role, Team } from "../../core/models/types.js";
+import type { BalancedMatch, QueuePlayer, QueueRole, Role, Team } from "../../core/models/types.js";
 import { ROLES } from "../../core/models/types.js";
 import type { QueueSnapshot } from "../../core/queue/QueueService.js";
 import type {
@@ -25,10 +25,10 @@ import type { MatchSummary } from "../../services/matchService.js";
 export const RANKING_PAGE_SIZE = 15;
 
 export interface DiscordPresentation {
-  roleEmojis?: Partial<Record<Role, string>>;
+  roleEmojis?: Partial<Record<QueueRole, string>>;
 }
 
-export const roleButtonId = (role: Role): string => `inhouse:join:${role}`;
+export const roleButtonId = (role: QueueRole): string => `inhouse:join:${role}`;
 export const leaveButtonId = "inhouse:leave";
 export const validationAcceptButtonId = (validationId: string): string =>
   `inhouse:validation:accept:${validationId}`;
@@ -113,12 +113,22 @@ const roleName: Record<Role, string> = {
   SUP: "Support",
 };
 
-export const ROLE_EMOJI_NAMES: Record<Role, string> = {
+export const ROLE_EMOJI_NAMES: Record<QueueRole, string> = {
   TOP: "TOP",
   JGL: "JGL",
   MID: "MID",
   ADC: "ADC",
   SUP: "SUP",
+  FILL: "FILL",
+};
+
+const queueRoleName: Record<QueueRole, string> = {
+  TOP: "Top",
+  JGL: "Jungle",
+  MID: "Mid",
+  ADC: "ADC",
+  SUP: "Support",
+  FILL: "Fill",
 };
 
 const roleTag: Record<Role, string> = {
@@ -191,7 +201,10 @@ export const queueCommand = new SlashCommandBuilder()
       .setName("rota")
       .setDescription("Sua rota.")
       .setRequired(true)
-      .addChoices(...ROLES.map((role) => ({ name: role, value: role }))),
+      .addChoices(
+        ...ROLES.map((role) => ({ name: role, value: role })),
+        { name: "FILL", value: "FILL" },
+      ),
   )
   .addUserOption((option) =>
     option.setName("duo").setDescription("Jogador que vai entrar junto com voce."),
@@ -200,7 +213,10 @@ export const queueCommand = new SlashCommandBuilder()
     option
       .setName("rota_duo")
       .setDescription("Rota do duo.")
-      .addChoices(...ROLES.map((role) => ({ name: role, value: role }))),
+      .addChoices(
+        ...ROLES.map((role) => ({ name: role, value: role })),
+        { name: "FILL", value: "FILL" },
+      ),
   );
 
 export const queueStatusCommand = new SlashCommandBuilder()
@@ -510,6 +526,15 @@ export const buildQueueButtons = (
     return button;
   });
 
+  const fillButton = new ButtonBuilder()
+    .setCustomId(roleButtonId("FILL"))
+    .setLabel("Fill")
+    .setStyle(ButtonStyle.Primary);
+  const fillEmoji = presentation?.roleEmojis?.FILL;
+  if (fillEmoji) {
+    fillButton.setEmoji(fillEmoji);
+  }
+
   const leaveButton = new ButtonBuilder()
     .setCustomId(leaveButtonId)
     .setLabel("Sair da fila")
@@ -517,7 +542,7 @@ export const buildQueueButtons = (
 
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(routeButtons),
-    new ActionRowBuilder<ButtonBuilder>().addComponents(leaveButton),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(fillButton, leaveButton),
   ];
 };
 
@@ -602,8 +627,8 @@ export const buildQueueEmbed = (
   const duoMap = new Map<string, string>(); // userId -> emoji
   let duoIndex = 0;
 
-  const allPlayers = ROLES.flatMap((role) => snapshot.roles[role]);
-  
+  const allPlayers = [...ROLES.flatMap((role) => snapshot.roles[role]), ...snapshot.fillPlayers];
+
   for (const player of allPlayers) {
     if (player.duoUserId && !duoMap.has(player.userId)) {
       // Check if their duo partner is also in the queue
@@ -661,6 +686,16 @@ export const buildQueueEmbed = (
     embed.addFields({
       name: "Aguardando vaga",
       value: waitingPlayers.join("\n"),
+      inline: false,
+    });
+  }
+
+  if (snapshot.fillPlayers.length > 0) {
+    const fillIcon = presentation?.roleEmojis?.FILL ?? "🔄";
+    const fillLines = snapshot.fillPlayers.map((player) => `${fillIcon} ${formatPlayerName(player)}`);
+    embed.addFields({
+      name: `🔄 Fill (${snapshot.fillPlayers.length})`,
+      value: fillLines.join("\n"),
       inline: false,
     });
   }
@@ -779,11 +814,19 @@ export const buildReadyCheckEmbed = (
     .setFooter({ text: `Ready-check ${readyCheckId.slice(0, 8)} | Fecha em 2 minutos` });
 };
 
+const queueRoleIcon = (role: QueueRole, presentation?: DiscordPresentation): string => {
+  if (role === "FILL") return presentation?.roleEmojis?.FILL ?? "🔄";
+  return roleIcon(role, presentation);
+};
+
+const queueRoleTitle = (role: QueueRole, presentation?: DiscordPresentation): string =>
+  `${queueRoleIcon(role, presentation)} ${queueRoleName[role]}`;
+
 export const buildDuoInviteEmbed = (params: {
   requesterName: string;
-  requesterRole: Role;
+  requesterRole: QueueRole;
   targetName: string;
-  targetRole: Role;
+  targetRole: QueueRole;
   presentation?: DiscordPresentation;
 }): EmbedBuilder =>
   new EmbedBuilder()
@@ -792,12 +835,12 @@ export const buildDuoInviteEmbed = (params: {
     .setDescription(`**${params.requesterName}** convidou **${params.targetName}** para entrarem na fila juntos.\nConfirme sua rota abaixo.`)
     .addFields(
       {
-        name: `Líder: ${roleTitle(params.requesterRole, params.presentation)}`,
+        name: `Líder: ${queueRoleTitle(params.requesterRole, params.presentation)}`,
         value: `**${params.requesterName}**`,
         inline: true,
       },
       {
-        name: `Convidado: ${roleTitle(params.targetRole, params.presentation)}`,
+        name: `Convidado: ${queueRoleTitle(params.targetRole, params.presentation)}`,
         value: `**${params.targetName}**`,
         inline: true,
       },

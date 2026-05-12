@@ -15,8 +15,8 @@ import {
 } from "discord.js";
 import { env } from "../../config/env.js";
 import { MatchmakingService } from "../../core/matchmaking/MatchmakingService.js";
-import type { BalancedMatch, QueuePlayer, RatedQueuePlayer, Role, Team } from "../../core/models/types.js";
-import { ROLES, isRole, isTeam } from "../../core/models/types.js";
+import type { BalancedMatch, QueuePlayer, QueueRole, RatedQueuePlayer, Role, Team } from "../../core/models/types.js";
+import { ROLES, isQueueRole, isRole, isTeam } from "../../core/models/types.js";
 import { QueueService, type QueueSnapshot } from "../../core/queue/QueueService.js";
 import { GuildService, type GuildConfigKey } from "../../services/guildService.js";
 import { MatchService } from "../../services/matchService.js";
@@ -486,7 +486,7 @@ export class DiscordGateway {
     }
 
     const roleValue = interaction.options.getString("rota", true);
-    if (!isRole(roleValue)) {
+    if (!isQueueRole(roleValue)) {
       await interaction.reply({ content: "Rota invalida.", ephemeral: true });
       return;
     }
@@ -509,12 +509,12 @@ export class DiscordGateway {
       return;
     }
 
-    if (!duoRoleValue || !isRole(duoRoleValue)) {
+    if (!duoRoleValue || !isQueueRole(duoRoleValue)) {
       await interaction.reply({ content: "Informe a rota_duo para entrar em duo.", ephemeral: true });
       return;
     }
 
-    if (roleValue === duoRoleValue) {
+    if (roleValue === duoRoleValue && roleValue !== "FILL") {
       await interaction.reply({ content: "Duo precisa usar rotas diferentes.", ephemeral: true });
       return;
     }
@@ -522,7 +522,7 @@ export class DiscordGateway {
     await this.openDuoInvite(interaction, duo, roleValue, duoRoleValue);
   }
 
-  private async joinSinglePlayer(interaction: QueueInteraction, role: Role): Promise<void> {
+  private async joinSinglePlayer(interaction: QueueInteraction, role: QueueRole): Promise<void> {
     if (!interaction.guildId) {
       await interaction.editReply("Use este comando dentro de um servidor.");
       return;
@@ -564,8 +564,8 @@ export class DiscordGateway {
   private async openDuoInvite(
     interaction: ChatInputCommandInteraction,
     duo: NonNullable<ReturnType<ChatInputCommandInteraction["options"]["getUser"]>>,
-    requesterRole: Role,
-    targetRole: Role,
+    requesterRole: QueueRole,
+    targetRole: QueueRole,
   ): Promise<void> {
     if (!interaction.guildId) {
       await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
@@ -1844,13 +1844,19 @@ export class DiscordGateway {
       return null;
     }
 
-    if (ROLES.some((role) => visibleQueue.filter((player) => player.role === role).length < 2)) {
+    // Resolve FILL players into needed roles
+    const resolvedQueue = this.resolveFillPlayers(visibleQueue);
+    if (!resolvedQueue || resolvedQueue.length < 10) {
+      return null;
+    }
+
+    if (ROLES.some((role) => resolvedQueue.filter((player) => player.role === role).length < 2)) {
       return null;
     }
 
     let bestCandidate: ReadyCheckCandidate | null = null;
-    for (let poolSize = 10; poolSize <= visibleQueue.length; poolSize += 1) {
-      const pool = visibleQueue.slice(0, poolSize);
+    for (let poolSize = 10; poolSize <= resolvedQueue.length; poolSize += 1) {
+      const pool = resolvedQueue.slice(0, poolSize);
       const ratedPool = await this.matchService.hydrateRatings(pool);
       const rolePairs = ROLES.map((role) =>
         this.twoPlayerCombinations(ratedPool.filter((player) => player.role === role)),
@@ -1899,6 +1905,52 @@ export class DiscordGateway {
     }
 
     return bestCandidate;
+  }
+
+  /**
+   * Resolve FILL players into the scarcest roles.
+   * Returns a new queue with FILL players assigned to actual roles.
+   * Never displaces existing role players.
+   */
+  private resolveFillPlayers(queue: readonly QueuePlayer[]): QueuePlayer[] {
+    const rolePlayers: QueuePlayer[] = [];
+    const fillPlayers: QueuePlayer[] = [];
+
+    for (const player of queue) {
+      if (player.role === "FILL") {
+        fillPlayers.push(player);
+      } else {
+        rolePlayers.push(player);
+      }
+    }
+
+    if (fillPlayers.length === 0) return [...rolePlayers];
+
+    // Find which roles need players (need 2 each, sorted by scarcest first)
+    const roleNeeds = ROLES.map((role) => ({
+      role,
+      count: rolePlayers.filter((p) => p.role === role).length,
+    }))
+      .filter((r) => r.count < 2)
+      .sort((a, b) => a.count - b.count);
+
+    const resolved = [...rolePlayers];
+    let fillIdx = 0;
+
+    for (const { role, count } of roleNeeds) {
+      const needed = 2 - count;
+      for (let i = 0; i < needed && fillIdx < fillPlayers.length; i++) {
+        resolved.push({ ...fillPlayers[fillIdx]!, role });
+        fillIdx++;
+      }
+    }
+
+    // Remaining fill players stay as overflow (won't be picked for match)
+    for (; fillIdx < fillPlayers.length; fillIdx++) {
+      resolved.push(fillPlayers[fillIdx]!);
+    }
+
+    return resolved;
   }
 
   private twoPlayerCombinations<T>(items: readonly T[]): [T, T][] {
@@ -2100,14 +2152,14 @@ export class DiscordGateway {
     return false;
   }
 
-  private roleFromButton(customId: string): Role | null {
+  private roleFromButton(customId: string): QueueRole | null {
     const prefix = "inhouse:join:";
     if (!customId.startsWith(prefix)) {
       return null;
     }
 
     const role = customId.slice(prefix.length);
-    return isRole(role) ? role : null;
+    return isQueueRole(role) ? role : null;
   }
 
   private async presentationForGuild(guildId: string | null): Promise<DiscordPresentation> {
@@ -2132,7 +2184,7 @@ export class DiscordGateway {
     const emojis = await guild.emojis.fetch().catch(() => guild.emojis.cache);
     const roleEmojis: DiscordPresentation["roleEmojis"] = {};
 
-    for (const role of ROLES) {
+    for (const role of [...ROLES, "FILL" as const]) {
       const expectedName = ROLE_EMOJI_NAMES[role];
       const emoji = emojis.find((candidate) => candidate.name?.toUpperCase() === expectedName);
       if (emoji?.name) {

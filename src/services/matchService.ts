@@ -146,14 +146,75 @@ export class MatchService {
       });
     }
 
+    // Load streaks for streak protection
+    const streaks = await this.computeStreaks(guildId, userIds);
+
     return players.map((player) => {
       const base = ratingsByUserId.get(player.userId);
       if (!base) {
         throw new Error(`Missing rating for user ${player.userId}.`);
       }
 
-      return { ...player, rating: { ...base, role: player.role } };
+      return {
+        ...player,
+        rating: { ...base, role: player.role as Role },
+        streak: streaks.get(player.userId) ?? 0,
+      };
     });
+  }
+
+  /**
+   * Compute current streak for each user: positive = wins, negative = losses.
+   * Looks at recent completed matches chronologically.
+   */
+  private async computeStreaks(guildId: string, userIds: string[]): Promise<Map<string, number>> {
+    const { data: matches } = await supabase
+      .from("matches")
+      .select("id, winning_team, completed_at")
+      .eq("guild_id", guildId)
+      .eq("status", "COMPLETED")
+      .neq("winning_team", "NONE")
+      .not("completed_at", "is", null)
+      .order("completed_at", { ascending: false })
+      .limit(50);
+
+    if (!matches || matches.length === 0) return new Map();
+
+    const matchIds = matches.map((m) => m.id);
+    const { data: participants } = await supabase
+      .from("match_participants")
+      .select("match_id, user_id, team")
+      .in("match_id", matchIds)
+      .in("user_id", userIds);
+
+    if (!participants) return new Map();
+
+    const matchMap = new Map(matches.map((m) => [m.id, m.winning_team as string]));
+    // Group participants by user, ordered by match recency (matches already desc)
+    const userMatches = new Map<string, { won: boolean }[]>();
+    for (const m of matches) {
+      for (const p of participants.filter((pp) => pp.match_id === m.id)) {
+        const list = userMatches.get(p.user_id) ?? [];
+        list.push({ won: matchMap.get(p.match_id) === p.team });
+        userMatches.set(p.user_id, list);
+      }
+    }
+
+    const streaks = new Map<string, number>();
+    for (const [userId, results] of userMatches) {
+      if (results.length === 0) continue;
+      const dir = results[0]!.won ? 1 : -1;
+      let count = 1;
+      for (let i = 1; i < results.length; i++) {
+        if ((dir > 0 && results[i]!.won) || (dir < 0 && !results[i]!.won)) {
+          count++;
+        } else {
+          break;
+        }
+      }
+      streaks.set(userId, count * dir);
+    }
+    return streaks;
   }
 
   async createMatch(match: BalancedMatch): Promise<PersistedMatch> {

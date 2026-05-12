@@ -1,6 +1,10 @@
 export const ROLES = ["TOP", "JGL", "MID", "ADC", "SUP"] as const;
 export type Role = (typeof ROLES)[number];
 
+/** Roles a player can pick when joining the queue (includes FILL). */
+export const QUEUE_ROLES = ["TOP", "JGL", "MID", "ADC", "SUP", "FILL"] as const;
+export type QueueRole = (typeof QUEUE_ROLES)[number];
+
 export const TEAMS = ["BLUE", "RED"] as const;
 export type Team = (typeof TEAMS)[number];
 
@@ -18,7 +22,7 @@ export interface QueuePlayer extends PlatformIdentity {
   guildId: string;
   channelId: string;
   userId: string;
-  role: Role;
+  role: QueueRole;
   duoUserId?: string | null;
   readyCheckId?: string | null;
   joinedAt: Date;
@@ -35,6 +39,8 @@ export interface PlayerRating {
 
 export interface RatedQueuePlayer extends QueuePlayer {
   rating: PlayerRating;
+  /** Current streak: positive = wins, negative = losses. Used for streak protection. */
+  streak?: number;
 }
 
 export interface TeamSlot {
@@ -67,6 +73,9 @@ export interface PersistedMatch {
 
 export const isRole = (value: string): value is Role =>
   (ROLES as readonly string[]).includes(value);
+
+export const isQueueRole = (value: string): value is QueueRole =>
+  (QUEUE_ROLES as readonly string[]).includes(value);
 
 export const isTeam = (value: string): value is Team =>
   (TEAMS as readonly string[]).includes(value);
