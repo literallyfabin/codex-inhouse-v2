@@ -95,7 +95,7 @@ describe("QueueService", () => {
     expect(snapshot.roles.ADC.slice(2).map((player) => player.userId)).toEqual(["adc-3"]);
   });
 
-  it("queues the same user in multiple roles like the legacy bot", () => {
+  it("moves the same user to the new role instead of duplicating them", () => {
     const queue = new QueueService();
     const first = queue.join("channel-1", {
       guildId: "guild-1",
@@ -121,8 +121,8 @@ describe("QueueService", () => {
 
     expect(first.status).toBe("joined");
     expect(second.status).toBe("joined");
-    expect(second.snapshot.totalPlayers).toBe(2);
-    expect(second.snapshot.roles.TOP).toHaveLength(1);
+    expect(second.snapshot.totalPlayers).toBe(1);
+    expect(second.snapshot.roles.TOP).toHaveLength(0);
     expect(second.snapshot.roles.JGL).toHaveLength(1);
     expect(second.snapshot.roles.JGL[0]?.joinedAt.toISOString()).toBe("2026-01-01T00:01:00.000Z");
   });
@@ -161,7 +161,7 @@ describe("QueueService", () => {
     }
   });
 
-  it("adds a second role behind existing players in that role", () => {
+  it("moves a role switcher behind existing players in the target role", () => {
     const queue = new QueueService();
     queue.join("channel-1", {
       guildId: "guild-1",
@@ -199,7 +199,7 @@ describe("QueueService", () => {
     });
 
     expect(result.status).toBe("joined");
-    expect(result.snapshot.roles.MID.map((player) => player.userId)).toEqual(["mid-old"]);
+    expect(result.snapshot.roles.MID.map((player) => player.userId)).toEqual([]);
     expect(result.snapshot.roles.ADC.map((player) => player.userId)).toEqual([
       "adc-1",
       "adc-2",
