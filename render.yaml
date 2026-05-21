@@ -3,7 +3,7 @@ services:
     name: codex-inhouse-v2
     runtime: node
     plan: starter
-    buildCommand: npm ci && npm run build
+    buildCommand: npm ci --include=dev --no-audit --no-fund && npm run build
     startCommand: npm run start
     healthCheckPath: /health
     envVars:
