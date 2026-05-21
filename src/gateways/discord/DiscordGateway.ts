@@ -4,6 +4,7 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  MessageFlags,
   type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Guild,
@@ -76,6 +77,7 @@ interface PendingValidation {
   matchNumber: number | null;
   winningTeam?: Team;
   participantUserIds: Set<string>;
+  participantDiscordIdToUserId: Map<string, string>;
   acceptedUserIds: Set<string>;
   requesterDisplayName: string;
   requesterAvatarUrl: string;
@@ -148,7 +150,9 @@ export class DiscordGateway {
 
     this.client.on(Events.InteractionCreate, (interaction) => {
       this.handleInteraction(interaction).catch((error: unknown) => {
-        console.error("Discord interaction failed", error);
+        this.handleInteractionError(interaction, error).catch((handlerError: unknown) => {
+          console.error("Discord interaction error handler failed", handlerError);
+        });
       });
     });
 
@@ -193,6 +197,37 @@ export class DiscordGateway {
     }
   }
 
+  private async handleInteractionError(interaction: Interaction, error: unknown): Promise<void> {
+    console.error("Discord interaction failed", error);
+
+    if (!interaction.isRepliable()) {
+      return;
+    }
+
+    const message = "Algo deu errado ao processar essa acao. Tenta novamente em alguns segundos.";
+    try {
+      if (interaction.deferred) {
+        await interaction.editReply({ content: message, embeds: [], components: [] });
+        return;
+      }
+
+      if (interaction.replied) {
+        await interaction.followUp({ content: message, flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      await interaction.reply({ content: message, flags: MessageFlags.Ephemeral });
+    } catch (replyError: unknown) {
+      const code = this.discordErrorCode(replyError);
+      if (code === 10062 || code === 40060) {
+        console.warn("Discord interaction error response skipped", { code });
+        return;
+      }
+
+      console.error("Discord interaction error response failed", replyError);
+    }
+  }
+
   private async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     switch (interaction.commandName) {
       case "setup-inhouse":
@@ -209,14 +244,22 @@ export class DiscordGateway {
 
       case "queue-status":
         {
+          if (!interaction.guildId) {
+            await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
+            return;
+          }
+
+          if (!(await this.deferEphemeral(interaction))) {
+            return;
+          }
+
           if (!(await this.ensureQueueChannel(interaction))) {
             return;
           }
 
           const presentation = await this.presentationForGuild(interaction.guildId);
-          await interaction.reply({
+          await interaction.editReply({
             embeds: [buildQueueEmbed(this.queueService.snapshot(interaction.channelId), presentation)],
-            ephemeral: true,
           });
         }
         return;
@@ -324,7 +367,7 @@ export class DiscordGateway {
         return;
 
       default:
-        await interaction.reply({ content: "Comando nao reconhecido.", ephemeral: true });
+        await interaction.reply({ content: "Comando nao reconhecido.", flags: MessageFlags.Ephemeral });
     }
   }
 
@@ -338,7 +381,7 @@ export class DiscordGateway {
 
     await interaction.reply({
       content: `Apenas admins liberados podem ${actionDescription}.`,
-      ephemeral: true,
+      flags: MessageFlags.Ephemeral,
     });
     return false;
   }
@@ -361,7 +404,7 @@ export class DiscordGateway {
     }
 
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use a fila dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use a fila dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -375,7 +418,7 @@ export class DiscordGateway {
 
     const role = this.roleFromButton(interaction.customId);
     if (!role) {
-      await interaction.reply({ content: "Botao de fila invalido.", ephemeral: true });
+      await interaction.reply({ content: "Botao de fila invalido.", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -391,7 +434,7 @@ export class DiscordGateway {
 
   private async handleSetupInhouse(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -399,7 +442,7 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     await this.guildService.setExclusiveChannel(interaction.guildId, interaction.channelId, "QUEUE");
     await this.refreshQueueChannels(interaction.guildId);
     await interaction.editReply("Canal configurado como fila oficial de inhouse.");
@@ -407,7 +450,7 @@ export class DiscordGateway {
 
   private async handleSetupRanking(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -415,7 +458,7 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     await this.guildService.setExclusiveChannel(interaction.guildId, interaction.channelId, "RANKING");
     await this.refreshRankingChannels(interaction.guildId);
     await interaction.editReply("Canal configurado como ranking oficial de inhouse.");
@@ -447,7 +490,7 @@ export class DiscordGateway {
 
   private async handleAdminWin(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -458,11 +501,11 @@ export class DiscordGateway {
     const matchInput = interaction.options.getString("match_id", true);
     const team = interaction.options.getString("team", true);
     if (!isTeam(team)) {
-      await interaction.reply({ content: "Time vencedor invalido.", ephemeral: true });
+      await interaction.reply({ content: "Time vencedor invalido.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const matchId = await this.matchService.resolveMatchId(interaction.guildId, matchInput);
     const matchContext = await this.matchService.getMatchContext(matchId);
     await this.matchService.completeMatch(matchId, team);
@@ -477,7 +520,41 @@ export class DiscordGateway {
 
   private async handleQueueCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const roleValue = interaction.options.getString("rota", true);
+    if (!isQueueRole(roleValue)) {
+      await interaction.reply({ content: "Rota invalida.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const duo = interaction.options.getUser("duo");
+    const duoRoleValue = interaction.options.getString("rota_duo");
+    const duoRole = duoRoleValue && isQueueRole(duoRoleValue) ? duoRoleValue : null;
+
+    if (duo?.bot) {
+      await interaction.reply({ content: "Duo precisa ser outro jogador, nao um bot.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (duo?.id === interaction.user.id) {
+      await interaction.reply({ content: "Voce nao pode entrar em duo com voce mesmo.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (duo && !duoRole) {
+      await interaction.reply({ content: "Informe a rota_duo para entrar em duo.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (duo && roleValue === duoRole && roleValue !== "FILL") {
+      await interaction.reply({ content: "Duo precisa usar rotas diferentes.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (!(await this.deferEphemeral(interaction))) {
       return;
     }
 
@@ -485,41 +562,12 @@ export class DiscordGateway {
       return;
     }
 
-    const roleValue = interaction.options.getString("rota", true);
-    if (!isQueueRole(roleValue)) {
-      await interaction.reply({ content: "Rota invalida.", ephemeral: true });
-      return;
-    }
-
-    const duo = interaction.options.getUser("duo");
-    const duoRoleValue = interaction.options.getString("rota_duo");
     if (!duo) {
-      await interaction.deferReply({ ephemeral: true });
       await this.joinSinglePlayer(interaction, roleValue);
       return;
     }
 
-    if (duo.bot) {
-      await interaction.reply({ content: "Duo precisa ser outro jogador, nao um bot.", ephemeral: true });
-      return;
-    }
-
-    if (duo.id === interaction.user.id) {
-      await interaction.reply({ content: "Voce nao pode entrar em duo com voce mesmo.", ephemeral: true });
-      return;
-    }
-
-    if (!duoRoleValue || !isQueueRole(duoRoleValue)) {
-      await interaction.reply({ content: "Informe a rota_duo para entrar em duo.", ephemeral: true });
-      return;
-    }
-
-    if (roleValue === duoRoleValue && roleValue !== "FILL") {
-      await interaction.reply({ content: "Duo precisa usar rotas diferentes.", ephemeral: true });
-      return;
-    }
-
-    await this.openDuoInvite(interaction, duo, roleValue, duoRoleValue);
+    await this.openDuoInvite(interaction, duo, roleValue, duoRole!);
   }
 
   private async joinSinglePlayer(interaction: QueueInteraction, role: QueueRole): Promise<void> {
@@ -568,11 +616,14 @@ export class DiscordGateway {
     targetRole: QueueRole,
   ): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await this.respondEphemeral(interaction, "Use este comando dentro de um servidor.");
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
+
     const [requesterUser, targetUser] = await Promise.all([
       this.userService.upsertDiscordUser(interaction.user.id, interaction.user.displayName),
       this.userService.upsertDiscordUser(duo.id, duo.displayName),
@@ -659,11 +710,11 @@ export class DiscordGateway {
 
   private async handleStats(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const target = interaction.options.getUser("jogador") ?? interaction.user;
     const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
     await this.userService.ensureDefaultStats(interaction.guildId, user.id);
@@ -680,11 +731,11 @@ export class DiscordGateway {
 
   private async handleSynergy(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const target = interaction.options.getUser("jogador") ?? interaction.user;
     const user = await this.userService.getUserByPlatformId("discord", target.id);
     
@@ -700,11 +751,11 @@ export class DiscordGateway {
 
   private async handleNemesis(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const target = interaction.options.getUser("jogador") ?? interaction.user;
     const user = await this.userService.getUserByPlatformId("discord", target.id);
     
@@ -720,11 +771,11 @@ export class DiscordGateway {
 
   private async handleTop(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: false });
+    await interaction.deferReply();
     const highlights = await this.statsService.getServerHighlights(interaction.guildId);
 
     if (!highlights) {
@@ -738,11 +789,11 @@ export class DiscordGateway {
 
   private async handleRoleReport(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const target = interaction.options.getUser("jogador") ?? interaction.user;
     const user = await this.userService.getUserByPlatformId("discord", target.id);
 
@@ -765,11 +816,11 @@ export class DiscordGateway {
 
   private async handleProfile(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: false });
+    await interaction.deferReply();
     const target = interaction.options.getUser("jogador") ?? interaction.user;
     const user = await this.userService.getUserByPlatformId("discord", target.id);
 
@@ -797,11 +848,11 @@ export class DiscordGateway {
 
   private async handleDemand(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: false });
+    await interaction.deferReply();
     const demand = await this.statsService.getRoleDemand(interaction.guildId);
 
     if (!demand) {
@@ -816,7 +867,14 @@ export class DiscordGateway {
 
   private async handleRanking(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const roleValue = interaction.options.getString("rota");
+    const role = roleValue && isRole(roleValue) ? roleValue : undefined;
+
+    if (!(await this.deferEphemeral(interaction))) {
       return;
     }
 
@@ -824,10 +882,6 @@ export class DiscordGateway {
       return;
     }
 
-    const roleValue = interaction.options.getString("rota");
-    const role = roleValue && isRole(roleValue) ? roleValue : undefined;
-
-    await interaction.deferReply({ ephemeral: true });
     const entries = await this.statsService.getRanking(interaction.guildId, role, 100);
     if (entries.length === 0) {
       await interaction.editReply("Ainda nao ha partidas finalizadas para montar ranking.");
@@ -863,8 +917,12 @@ export class DiscordGateway {
     if (!session) {
       await interaction.reply({
         content: "Esse ranking expirou. Use /ranking novamente.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
+      return true;
+    }
+
+    if (!(await this.deferButtonUpdate(interaction))) {
       return true;
     }
 
@@ -875,7 +933,7 @@ export class DiscordGateway {
         : Math.max(session.page - 1, 0);
 
     const presentation = await this.presentationForGuild(interaction.guildId);
-    await interaction.update({
+    await interaction.message.edit({
       embeds: [buildRankingEmbed(session.entries, session.role, session.page, presentation)],
       components: buildRankingButtons(parsed.sessionId, session.page, totalPages),
     });
@@ -890,46 +948,51 @@ export class DiscordGateway {
 
     const pending = this.pendingReadyChecks.get(parsed.readyCheckId);
     if (!pending) {
-      await interaction.reply({ content: "Esse ready-check expirou ou ja foi fechado.", ephemeral: true });
+      await interaction.reply({ content: "Esse ready-check expirou ou ja foi fechado.", flags: MessageFlags.Ephemeral });
       return true;
     }
 
-    const user = await this.userService.upsertDiscordUser(
-      interaction.user.id,
-      interaction.user.displayName,
+    const pendingPlayer = pending.players.find(
+      (player) => player.platform === "discord" && player.platformUserId === interaction.user.id,
     );
-    if (!pending.players.some((player) => player.userId === user.id)) {
-      await interaction.reply({ content: "Somente jogadores desta partida podem responder.", ephemeral: true });
+    if (!pendingPlayer) {
+      await interaction.reply({ content: "Somente jogadores desta partida podem responder.", flags: MessageFlags.Ephemeral });
       return true;
     }
 
     if (parsed.action === "reject") {
-      await interaction.deferUpdate();
-      await this.cancelReadyCheck(parsed.readyCheckId, user.id, interaction.user.displayName);
-      await interaction.followUp({ content: "Voce recusou a partida e saiu desta fila.", ephemeral: true });
+      if (!(await this.deferButtonUpdate(interaction))) {
+        return true;
+      }
+
+      await this.cancelReadyCheck(parsed.readyCheckId, pendingPlayer.userId, interaction.user.displayName);
+      await interaction.followUp({ content: "Voce recusou a partida e saiu desta fila.", flags: MessageFlags.Ephemeral });
       return true;
     }
 
-    if (pending.acceptedUserIds.has(user.id)) {
-      await interaction.reply({ content: "Voce ja aceitou esta partida.", ephemeral: true });
+    if (pending.acceptedUserIds.has(pendingPlayer.userId)) {
+      await interaction.reply({ content: "Voce ja aceitou esta partida.", flags: MessageFlags.Ephemeral });
       return true;
     }
 
-    pending.acceptedUserIds.add(user.id);
+    if (!(await this.deferButtonUpdate(interaction))) {
+      return true;
+    }
+
+    pending.acceptedUserIds.add(pendingPlayer.userId);
     await this.readyCheckRepository.setAcceptedUserIds(pending.id, [...pending.acceptedUserIds]);
 
     if (pending.acceptedUserIds.size < pending.players.length) {
       const presentation = await this.presentationForGuild(pending.guildId);
-      await interaction.update({
+      await interaction.message.edit({
         embeds: [buildReadyCheckEmbed(pending.id, pending.match, pending.acceptedUserIds, presentation)],
         components: buildReadyCheckButtons(pending.id),
       });
       return true;
     }
 
-    await interaction.deferUpdate();
     await this.acceptReadyCheck(pending.id);
-    await interaction.followUp({ content: "Partida confirmada.", ephemeral: true });
+    await interaction.followUp({ content: "Partida confirmada.", flags: MessageFlags.Ephemeral });
     return true;
   }
 
@@ -941,18 +1004,20 @@ export class DiscordGateway {
 
     const pending = this.pendingDuoInvites.get(parsed.duoId);
     if (!pending) {
-      await interaction.reply({ content: "Esse convite de duo expirou.", ephemeral: true });
+      await interaction.reply({ content: "Esse convite de duo expirou.", flags: MessageFlags.Ephemeral });
       return true;
     }
 
     if (interaction.user.id !== pending.targetDiscordId) {
-      await interaction.reply({ content: "Apenas o jogador convidado pode responder este duo.", ephemeral: true });
+      await interaction.reply({ content: "Apenas o jogador convidado pode responder este duo.", flags: MessageFlags.Ephemeral });
       return true;
     }
 
     clearTimeout(pending.timeout);
     this.pendingDuoInvites.delete(parsed.duoId);
-    await interaction.deferUpdate();
+    if (!(await this.deferButtonUpdate(interaction))) {
+      return true;
+    }
 
     if (parsed.action === "reject") {
       await interaction.message.edit({
@@ -1003,11 +1068,11 @@ export class DiscordGateway {
 
   private async handleHistory(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const target = interaction.options.getUser("jogador") ?? interaction.user;
     const limit = interaction.options.getInteger("limite") ?? 10;
     const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
@@ -1024,11 +1089,11 @@ export class DiscordGateway {
 
   private async handleLastMatch(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const target = interaction.options.getUser("jogador");
     const user = target
       ? await this.userService.upsertDiscordUser(target.id, target.displayName)
@@ -1050,11 +1115,11 @@ export class DiscordGateway {
 
   private async handleCompare(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const arg1 = interaction.options.getUser("jogador1");
     const arg2 = interaction.options.getUser("jogador2");
@@ -1085,7 +1150,7 @@ export class DiscordGateway {
     if (!riotApiService.isConfigured) {
       await interaction.reply({
         content: "❌ A integração com a Riot não está configurada. Contate o administrador.",
-        ephemeral: true,
+        flags: MessageFlags.Ephemeral,
       });
       return;
     }
@@ -1093,7 +1158,7 @@ export class DiscordGateway {
     const nick = interaction.options.getString("nick", true).trim();
     const tag = interaction.options.getString("tag", true).trim().replace(/^#/, "");
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     // Check if already linked
     const existing = await riotOAuthService.getRiotAccountForDiscordId(interaction.user.id);
@@ -1123,7 +1188,7 @@ export class DiscordGateway {
 
   private async handleMmrHistory(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -1132,7 +1197,7 @@ export class DiscordGateway {
     const limit = interaction.options.getInteger("limite") ?? 30;
     const target = interaction.options.getUser("jogador") ?? interaction.user;
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
     const history = await this.statsService.getMmrHistory(interaction.guildId, user.id, role, limit);
     const presentation = await this.presentationForGuild(interaction.guildId);
@@ -1143,11 +1208,11 @@ export class DiscordGateway {
 
   private async handleChampion(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const championName = interaction.options.getString("nome", true).trim();
     const matchInput = interaction.options.getString("match_id")?.trim();
     const matchId = matchInput ? await this.matchService.resolveMatchId(interaction.guildId, matchInput) : undefined;
@@ -1181,7 +1246,11 @@ export class DiscordGateway {
     action: PendingValidationAction,
   ): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (!(await this.deferEphemeral(interaction))) {
       return;
     }
 
@@ -1191,19 +1260,24 @@ export class DiscordGateway {
     );
     const match = await this.matchService.getLatestOngoingMatchForUser(interaction.guildId, user.id);
     if (!match) {
-      await interaction.reply({
-        content: "Nao encontrei partida em andamento para voce neste servidor.",
-        ephemeral: true,
-      });
+      await interaction.editReply("Nao encontrei partida em andamento para voce neste servidor.");
       return;
     }
 
+    const participantUsers = await this.userService.getUsersByIds(match.participantUserIds);
+    const participantDiscordIdToUserId = new Map(
+      participantUsers
+        .filter((participant) => participant.discordId !== null)
+        .map((participant) => [participant.discordId!, participant.id]),
+    );
+    const discordIds = [...participantDiscordIdToUserId.keys()];
     const validationId = randomUUID();
     const pendingValidation: PendingValidation = {
       action,
       matchId: match.matchId,
       matchNumber: match.matchNumber,
       participantUserIds: new Set(match.participantUserIds),
+      participantDiscordIdToUserId,
       acceptedUserIds: new Set(),
       requesterDisplayName: interaction.user.displayName,
       requesterAvatarUrl: interaction.user.displayAvatarURL(),
@@ -1213,12 +1287,8 @@ export class DiscordGateway {
     }
     this.pendingValidations.set(validationId, pendingValidation);
 
-    const participantUsers = await this.userService.getUsersByIds(Array.from(pendingValidation.participantUserIds));
-    const discordIds = participantUsers
-      .map((u) => u.discordId)
-      .filter((id): id is string => id !== null);
-
-    await interaction.reply({
+    await interaction.editReply(`Validacao aberta para ${formatMatchLabel(match.matchNumber, match.matchId)}.`);
+    await interaction.followUp({
       content: this.mentionDiscordUsers(discordIds),
       embeds: [this.renderValidationEmbed(validationId)],
       components: buildValidationButtons(validationId),
@@ -1237,22 +1307,22 @@ export class DiscordGateway {
     const validationId = interaction.customId.slice(isAccept ? acceptPrefix.length : rejectPrefix.length);
     const pending = this.pendingValidations.get(validationId);
     if (!pending) {
-      await interaction.reply({ content: "Esta validacao expirou ou ja foi concluida.", ephemeral: true });
+      await interaction.reply({ content: "Esta validacao expirou ou ja foi concluida.", flags: MessageFlags.Ephemeral });
       return true;
     }
 
-    const user = await this.userService.upsertDiscordUser(
-      interaction.user.id,
-      interaction.user.displayName,
-    );
-    if (!pending.participantUserIds.has(user.id)) {
-      await interaction.reply({ content: "Somente jogadores desta partida podem validar.", ephemeral: true });
+    const userId = pending.participantDiscordIdToUserId.get(interaction.user.id);
+    if (!userId) {
+      await interaction.reply({ content: "Somente jogadores desta partida podem validar.", flags: MessageFlags.Ephemeral });
       return true;
     }
 
     if (isReject) {
       this.pendingValidations.delete(validationId);
-      await interaction.deferUpdate();
+      if (!(await this.deferButtonUpdate(interaction))) {
+        return true;
+      }
+
       await interaction.message.edit({
         content: `Validacao da partida ${formatMatchLabel(pending.matchNumber, pending.matchId)} recusada por ${interaction.user.displayName}.`,
         embeds: [],
@@ -1262,21 +1332,24 @@ export class DiscordGateway {
       return true;
     }
 
-    if (pending.acceptedUserIds.has(user.id)) {
-      await interaction.reply({ content: "Voce ja validou esta solicitacao.", ephemeral: true });
+    if (pending.acceptedUserIds.has(userId)) {
+      await interaction.reply({ content: "Voce ja validou esta solicitacao.", flags: MessageFlags.Ephemeral });
       return true;
     }
 
-    pending.acceptedUserIds.add(user.id);
+    if (!(await this.deferButtonUpdate(interaction))) {
+      return true;
+    }
+
+    pending.acceptedUserIds.add(userId);
     if (pending.acceptedUserIds.size < 6) {
-      await interaction.update({
+      await interaction.message.edit({
         embeds: [this.renderValidationEmbed(validationId)],
         components: buildValidationButtons(validationId),
       });
       return true;
     }
 
-    await interaction.deferUpdate();
     if (pending.action === "WIN") {
       if (!pending.winningTeam) {
         throw new Error("Missing winning team for win validation.");
@@ -1305,13 +1378,13 @@ export class DiscordGateway {
         : `Partida ${matchLabel} cancelada.`;
     await interaction.message.edit({ content: actionText, embeds: [], components: [] });
     this.scheduleMessageDelete(interaction.message);
-    await interaction.followUp({ content: "Validacao concluida.", ephemeral: true });
+    await interaction.followUp({ content: "Validacao concluida.", flags: MessageFlags.Ephemeral });
     return true;
   }
 
   private async handleAdminChannel(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -1320,19 +1393,20 @@ export class DiscordGateway {
     }
 
     const action = interaction.options.getString("acao", true);
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
+
     if (action === "UNMARK") {
       await this.guildService.unmarkChannel(interaction.channelId);
-      await interaction.reply({ content: "Canal desmarcado.", ephemeral: true });
+      await interaction.editReply("Canal desmarcado.");
       return;
     }
 
     const channelType = action === "MARK_QUEUE" ? "QUEUE" : action === "MARK_TOP" ? "TOP" : "RANKING";
     await this.guildService.markChannel(interaction.guildId, interaction.channelId, channelType);
     const label = channelType === "QUEUE" ? "fila" : channelType === "TOP" ? "destaques" : "ranking";
-    await interaction.reply({
-      content: `Canal marcado como ${label}.`,
-      ephemeral: true,
-    });
+    await interaction.editReply(`Canal marcado como ${label}.`);
 
     if (channelType === "QUEUE") {
       await this.refreshQueueChannels(interaction.guildId);
@@ -1345,7 +1419,7 @@ export class DiscordGateway {
 
   private async handleAdminConfig(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -1355,24 +1429,29 @@ export class DiscordGateway {
 
     const key = interaction.options.getString("chave", true) as GuildConfigKey;
     const option = interaction.options.getString("opcao", true);
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
+
     const value =
       option === "STATUS"
         ? await this.guildService.getConfig(interaction.guildId, key)
         : await this.guildService.setConfig(interaction.guildId, key, option === "ON");
 
-    await interaction.reply({
-      content: `${key}: ${value ? "ON" : "OFF"}`,
-      ephemeral: true,
-    });
+    await interaction.editReply(`${key}: ${value ? "ON" : "OFF"}`);
   }
 
   private async handleAdminReset(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
     if (!(await this.ensureAdminUser(interaction, "resetar filas"))) {
+      return;
+    }
+
+    if (!(await this.deferEphemeral(interaction))) {
       return;
     }
 
@@ -1382,10 +1461,7 @@ export class DiscordGateway {
       const snapshots = this.queueService.removeUsersEverywhereInGuild(interaction.guildId, [user.id]);
       await this.queueRepository.removeUsersEverywhereInGuild(interaction.guildId, [user.id]);
       await this.refreshQueueChannels(interaction.guildId);
-      await interaction.reply({
-        content: `${target.displayName} removido das filas. Filas afetadas: ${snapshots.length}.`,
-        ephemeral: true,
-      });
+      await interaction.editReply(`${target.displayName} removido das filas. Filas afetadas: ${snapshots.length}.`);
       return;
     }
 
@@ -1394,12 +1470,12 @@ export class DiscordGateway {
     this.queueService.reset(queueId);
     await this.queueRepository.resetChannel(queueId);
     await this.refreshQueueChannels(interaction.guildId);
-    await interaction.reply({ content: `Fila resetada no canal <#${queueId}>.`, ephemeral: true });
+    await interaction.editReply(`Fila resetada no canal <#${queueId}>.`);
   }
 
   private async handleAdminCancel(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -1408,7 +1484,7 @@ export class DiscordGateway {
     }
 
     const matchInput = interaction.options.getString("match_id", true);
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const matchId = await this.matchService.resolveMatchId(interaction.guildId, matchInput);
     const matchContext = await this.matchService.getMatchContext(matchId);
     await this.matchService.cancelMatch(matchId);
@@ -1420,7 +1496,7 @@ export class DiscordGateway {
 
   private async handleAdminWinUser(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -1429,7 +1505,7 @@ export class DiscordGateway {
     }
 
     const target = interaction.options.getUser("jogador", true);
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
     const match = await this.matchService.getLatestOngoingMatchForUser(interaction.guildId, user.id);
     if (!match) {
@@ -1449,7 +1525,7 @@ export class DiscordGateway {
 
   private async handleAdminCancelUser(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -1458,7 +1534,7 @@ export class DiscordGateway {
     }
 
     const target = interaction.options.getUser("jogador", true);
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
     const match = await this.matchService.getLatestOngoingMatchForUser(interaction.guildId, user.id);
     if (!match) {
@@ -1475,7 +1551,7 @@ export class DiscordGateway {
 
   private async handleDevCreateMatch(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
@@ -1485,11 +1561,11 @@ export class DiscordGateway {
 
     const roleValue = interaction.options.getString("rota", true);
     if (!isRole(roleValue)) {
-      await interaction.reply({ content: "Rota invalida.", ephemeral: true });
+      await interaction.reply({ content: "Rota invalida.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const realUser = await this.userService.upsertDiscordUser(
       interaction.user.id,
       interaction.user.displayName,
@@ -2046,7 +2122,7 @@ export class DiscordGateway {
     }
 
     try {
-      await interaction.deferReply({ ephemeral: true });
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       return true;
     } catch (error) {
       const code = this.discordErrorCode(error);
@@ -2063,6 +2139,28 @@ export class DiscordGateway {
     }
   }
 
+  private async deferButtonUpdate(interaction: ButtonInteraction): Promise<boolean> {
+    if (interaction.deferred || interaction.replied) {
+      return true;
+    }
+
+    try {
+      await interaction.deferUpdate();
+      return true;
+    } catch (error) {
+      const code = this.discordErrorCode(error);
+      if (code === 10062 || code === 40060) {
+        console.warn("Discord interaction skipped before button acknowledgement", {
+          code,
+          customId: interaction.customId,
+        });
+        return false;
+      }
+
+      throw error;
+    }
+  }
+
   private async respondEphemeral(interaction: QueueInteraction, response: string | EphemeralResponse): Promise<void> {
     const options: EphemeralResponse = typeof response === "string" ? { content: response } : response;
     if (interaction.deferred) {
@@ -2071,11 +2169,11 @@ export class DiscordGateway {
     }
 
     if (interaction.replied) {
-      await interaction.followUp({ ...options, ephemeral: true });
+      await interaction.followUp({ ...options, flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.reply({ ...options, ephemeral: true });
+    await interaction.reply({ ...options, flags: MessageFlags.Ephemeral });
   }
 
   private discordErrorCode(error: unknown): number | undefined {
@@ -2129,9 +2227,9 @@ export class DiscordGateway {
     return false;
   }
 
-  private async ensureRankingChannel(interaction: ChatInputCommandInteraction): Promise<boolean> {
+  private async ensureRankingChannel(interaction: QueueInteraction): Promise<boolean> {
     if (!interaction.guildId) {
-      await interaction.reply({ content: "Use este comando dentro de um servidor.", ephemeral: true });
+      await this.respondEphemeral(interaction, "Use este comando dentro de um servidor.");
       return false;
     }
 
@@ -2145,10 +2243,7 @@ export class DiscordGateway {
     }
 
     const channelList = markedChannels.map((channel) => `<#${channel.channelId}>`).join(", ");
-    await interaction.reply({
-      content: `Use o canal marcado como ranking: ${channelList}.`,
-      ephemeral: true,
-    });
+    await this.respondEphemeral(interaction, `Use o canal marcado como ranking: ${channelList}.`);
     return false;
   }
 
