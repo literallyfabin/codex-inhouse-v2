@@ -6,6 +6,7 @@ import { supabase } from "./supabaseClient.js";
 export interface SeasonRankingEntry {
   userId: string;
   displayName: string;
+  discordId: string | null;
   mmr: number;
   games: number;
   wins: number;
@@ -14,18 +15,32 @@ export interface SeasonRankingEntry {
 }
 
 export interface SeasonHighlights {
-  topMmr: { displayName: string; mmr: number } | null;
-  topWinrate: { displayName: string; winrate: number; games: number } | null;
-  topStreak: { displayName: string; streak: number } | null;
-  mostActive: { displayName: string; games: number } | null;
-  bestDuo: { name1: string; name2: string; winrate: number; games: number } | null;
-  biggestRivalry: { name1: string; name2: string; games: number } | null;
-  bestFill: { displayName: string; winrate: number; games: number } | null;
-  worstFill: { displayName: string; winrate: number; games: number } | null;
+  topMmr: { displayName: string; discordId: string | null; mmr: number } | null;
+  topWinrate: { displayName: string; discordId: string | null; winrate: number; games: number } | null;
+  topStreak: { displayName: string; discordId: string | null; streak: number } | null;
+  mostActive: { displayName: string; discordId: string | null; games: number } | null;
+  bestDuo: {
+    name1: string;
+    name2: string;
+    discordId1: string | null;
+    discordId2: string | null;
+    winrate: number;
+    games: number;
+  } | null;
+  biggestRivalry: {
+    name1: string;
+    name2: string;
+    discordId1: string | null;
+    discordId2: string | null;
+    games: number;
+  } | null;
+  bestFill: { displayName: string; discordId: string | null; winrate: number; games: number } | null;
+  worstFill: { displayName: string; discordId: string | null; winrate: number; games: number } | null;
 }
 
 export interface SeasonComeback {
   displayName: string;
+  discordId: string | null;
   fromMmr: number;
   toMmr: number;
   delta: number;
@@ -71,6 +86,11 @@ interface GlobalStatRow {
   mmr: number;
 }
 
+interface UserProfile {
+  displayName: string;
+  discordId: string | null;
+}
+
 // ---------- Service ----------
 
 const conservativeMmr = (mu: number, sigma: number) => Math.round((mu - 3 * sigma) * 40 + 1000);
@@ -78,6 +98,32 @@ const displayMmr = (s: Pick<GlobalStatRow, "mu" | "sigma" | "mmr">) =>
   Number.isFinite(s.mmr) && s.mmr > 0 ? Math.round(s.mmr) : conservativeMmr(s.mu, s.sigma);
 
 export class SeasonArchiveService {
+  async resolveArchiveGuildId(guildId: string): Promise<string> {
+    const { count, error } = await supabase
+      .from("matches_s1" as never)
+      .select("id", { count: "exact", head: true })
+      .eq("guild_id", guildId)
+      .eq("status", "COMPLETED");
+
+    if (error) throw new Error(`Failed to check S1 archive guild: ${error.message}`);
+    if ((count ?? 0) > 0) return guildId;
+
+    const { data, error: fallbackError } = await supabase
+      .from("matches_s1" as never)
+      .select("guild_id")
+      .eq("status", "COMPLETED");
+
+    if (fallbackError) throw new Error(`Failed to find S1 archive guild: ${fallbackError.message}`);
+
+    const byGuild = new Map<string, number>();
+    for (const row of (data ?? []) as { guild_id: string }[]) {
+      byGuild.set(row.guild_id, (byGuild.get(row.guild_id) ?? 0) + 1);
+    }
+
+    const best = [...byGuild.entries()].sort((a, b) => b[1] - a[1])[0];
+    return best?.[0] ?? guildId;
+  }
+
   /**
    * Top-N ranking for Season 1 (reads matches_s1 + match_participants_s1 + player_stats_global_s1).
    */
@@ -109,15 +155,17 @@ export class SeasonArchiveService {
 
     if (error) throw new Error(`Failed to load S1 stats: ${error.message}`);
 
-    const names = await this.getDisplayNames(userIds);
+    const profiles = await this.getUserProfiles(userIds);
     const entries: SeasonRankingEntry[] = [];
 
     for (const stat of (stats ?? []) as GlobalStatRow[]) {
       const rec = records.get(stat.user_id);
       if (!rec) continue;
+      const profile = profiles.get(stat.user_id);
       entries.push({
         userId: stat.user_id,
-        displayName: names.get(stat.user_id) ?? "Desconhecido",
+        displayName: profile?.displayName ?? "Desconhecido",
+        discordId: profile?.discordId ?? null,
         mmr: displayMmr(stat),
         games: rec.games,
         wins: rec.wins,
@@ -177,8 +225,8 @@ export class SeasonArchiveService {
 
     const participants = await this.getParticipantsByMatchIds([...matches.keys()]);
     const allUserIds = new Set(participants.map((p) => p.user_id));
-    const names = await this.getDisplayNames([...allUserIds]);
-    const name = (uid: string) => names.get(uid) ?? "Desconhecido";
+    const profiles = await this.getUserProfiles([...allUserIds]);
+    const profile = (uid: string): UserProfile => profiles.get(uid) ?? { displayName: "Desconhecido", discordId: null };
 
     // Top MMR
     const { data: topStat } = await supabase
@@ -187,9 +235,11 @@ export class SeasonArchiveService {
       .eq("guild_id", guildId)
       .order("mmr", { ascending: false })
       .limit(1);
-    const topMmr = topStat?.[0]
-      ? { displayName: name((topStat[0] as GlobalStatRow).user_id), mmr: displayMmr(topStat[0] as GlobalStatRow) }
-      : null;
+    const topMmr = topStat?.[0] ? (() => {
+      const stat = topStat[0] as GlobalStatRow;
+      const user = profile(stat.user_id);
+      return { displayName: user.displayName, discordId: user.discordId, mmr: displayMmr(stat) };
+    })() : null;
 
     // W/L per user
     const userRec = new Map<string, { games: number; wins: number; losses: number }>();
@@ -211,7 +261,8 @@ export class SeasonArchiveService {
       const wr = r.wins / r.games;
       if (wr > bestWr) {
         bestWr = wr;
-        topWinrate = { displayName: name(uid), winrate: wr, games: r.games };
+        const user = profile(uid);
+        topWinrate = { displayName: user.displayName, discordId: user.discordId, winrate: wr, games: r.games };
       }
     }
 
@@ -221,7 +272,8 @@ export class SeasonArchiveService {
     for (const [uid, r] of userRec) {
       if (r.games > maxGames) {
         maxGames = r.games;
-        mostActive = { displayName: name(uid), games: r.games };
+        const user = profile(uid);
+        mostActive = { displayName: user.displayName, discordId: user.discordId, games: r.games };
       }
     }
 
@@ -243,7 +295,8 @@ export class SeasonArchiveService {
     for (const [uid, s] of streaks) {
       if (s > bestStreak) {
         bestStreak = s;
-        topStreak = { displayName: name(uid), streak: s };
+        const user = profile(uid);
+        topStreak = { displayName: user.displayName, discordId: user.discordId, streak: s };
       }
     }
 
@@ -281,7 +334,16 @@ export class SeasonArchiveService {
       const score = wr * 1000 + s.games;
       if (score > bestDuoScore) {
         bestDuoScore = score;
-        bestDuo = { name1: name(s.id1), name2: name(s.id2), winrate: wr, games: s.games };
+        const user1 = profile(s.id1);
+        const user2 = profile(s.id2);
+        bestDuo = {
+          name1: user1.displayName,
+          name2: user2.displayName,
+          discordId1: user1.discordId,
+          discordId2: user2.discordId,
+          winrate: wr,
+          games: s.games,
+        };
       }
     }
 
@@ -290,7 +352,15 @@ export class SeasonArchiveService {
     for (const s of rivalryStats.values()) {
       if (s.games > maxRivalryGames) {
         maxRivalryGames = s.games;
-        biggestRivalry = { name1: name(s.id1), name2: name(s.id2), games: s.games };
+        const user1 = profile(s.id1);
+        const user2 = profile(s.id2);
+        biggestRivalry = {
+          name1: user1.displayName,
+          name2: user2.displayName,
+          discordId1: user1.discordId,
+          discordId2: user2.discordId,
+          games: s.games,
+        };
       }
     }
 
@@ -316,12 +386,14 @@ export class SeasonArchiveService {
       const bScore = wr * 1000 + r.games;
       if (bScore > bestFillScore && r.wins > 0) {
         bestFillScore = bScore;
-        bestFill = { displayName: name(uid), winrate: wr, games: r.games };
+        const user = profile(uid);
+        bestFill = { displayName: user.displayName, discordId: user.discordId, winrate: wr, games: r.games };
       }
       const wScore = wr - r.games / 1000;
       if (wScore < worstFillScore && r.wins < r.games) {
         worstFillScore = wScore;
-        worstFill = { displayName: name(uid), winrate: wr, games: r.games };
+        const user = profile(uid);
+        worstFill = { displayName: user.displayName, discordId: user.discordId, winrate: wr, games: r.games };
       }
     }
 
@@ -353,7 +425,7 @@ export class SeasonArchiveService {
       currentMmr.set(s.user_id, displayMmr(s));
     }
 
-    const names = await this.getDisplayNames(userIds);
+    const profiles = await this.getUserProfiles(userIds);
 
     // Group participations by user, sorted chronologically.
     const byUser = new Map<string, { mmr: number; createdAt: number }[]>();
@@ -382,8 +454,10 @@ export class SeasonArchiveService {
       if (delta <= 0) continue;
 
       if (!best || delta > best.delta) {
+        const profile = profiles.get(uid);
         best = {
-          displayName: names.get(uid) ?? "Desconhecido",
+          displayName: profile?.displayName ?? "Desconhecido",
+          discordId: profile?.discordId ?? null,
           fromMmr: minMmr,
           toMmr: cur,
           delta,
@@ -419,15 +493,18 @@ export class SeasonArchiveService {
     return (data ?? []) as ParticipantRow[];
   }
 
-  private async getDisplayNames(userIds: readonly string[]): Promise<Map<string, string>> {
+  private async getUserProfiles(userIds: readonly string[]): Promise<Map<string, UserProfile>> {
     if (userIds.length === 0) return new Map();
     const { data, error } = await supabase
       .from("users")
-      .select("id, display_name")
+      .select("id, display_name, discord_id")
       .in("id", [...new Set(userIds)]);
 
     if (error) throw new Error(`Failed to load display names: ${error.message}`);
-    return new Map((data ?? []).map((row) => [row.id, row.display_name]));
+    return new Map((data ?? []).map((row) => [
+      row.id,
+      { displayName: row.display_name, discordId: row.discord_id ?? null },
+    ]));
   }
 
   // Used by ROLES iteration helpers (kept here so we can import a sealed module).

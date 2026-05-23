@@ -921,11 +921,12 @@ export class DiscordGateway {
     let ranking: SeasonRankingEntry[];
 
     try {
+      const archiveGuildId = await seasonArchiveService.resolveArchiveGuildId(interaction.guildId);
       [overview, highlights, comeback, ranking] = await Promise.all([
-        seasonArchiveService.getOverview(interaction.guildId),
-        seasonArchiveService.getHighlights(interaction.guildId),
-        seasonArchiveService.getComeback(interaction.guildId),
-        seasonArchiveService.getRanking(interaction.guildId, 500),
+        seasonArchiveService.getOverview(archiveGuildId),
+        seasonArchiveService.getHighlights(archiveGuildId),
+        seasonArchiveService.getComeback(archiveGuildId),
+        seasonArchiveService.getRanking(archiveGuildId, 500),
       ]);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -958,7 +959,7 @@ export class DiscordGateway {
       buildMemorialHighlightsEmbed(highlights),
       buildMemorialComebackEmbed(comeback),
       buildMemorialRankingEmbed(ranking, 0),
-      buildMemorialClosingEmbed(),
+      buildMemorialClosingEmbed(ranking),
     ];
 
     await interaction.editReply({
@@ -996,7 +997,7 @@ export class DiscordGateway {
       buildMemorialHighlightsEmbed(session.highlights),
       buildMemorialComebackEmbed(session.comeback),
       buildMemorialRankingEmbed(session.ranking, session.page),
-      buildMemorialClosingEmbed(),
+      buildMemorialClosingEmbed(session.ranking),
     ];
 
     await interaction.message.edit({
