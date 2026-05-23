@@ -36,6 +36,26 @@ describe("MatchmakingService", () => {
     expect(match.muDifference).toBe(10);
   });
 
+  it("balances the selected players into teams instead of preserving queue order", () => {
+    const players = ROLES.flatMap((role, roleIndex) => [
+      player(roleIndex * 2, role, 100),
+      player(roleIndex * 2 + 1, role, 10),
+    ]);
+
+    const match = new MatchmakingService().balance(players);
+    const blueMu = match.teamBlue.reduce((sum, slot) => sum + slot.player.rating.mu, 0);
+    const redMu = match.teamRed.reduce((sum, slot) => sum + slot.player.rating.mu, 0);
+
+    expect(match.teamBlue.map((slot) => slot.player.userId)).not.toEqual([
+      "user-0",
+      "user-2",
+      "user-4",
+      "user-6",
+      "user-8",
+    ]);
+    expect(Math.abs(blueMu - redMu)).toBe(90);
+  });
+
   it("rejects incomplete queues", () => {
     const service = new MatchmakingService();
     expect(() => service.balance([])).toThrow("exactly 10 players");

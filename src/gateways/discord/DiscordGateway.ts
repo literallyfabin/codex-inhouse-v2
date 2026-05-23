@@ -16,7 +16,7 @@ import {
 } from "discord.js";
 import { env } from "../../config/env.js";
 import { MatchmakingService } from "../../core/matchmaking/MatchmakingService.js";
-import type { BalancedMatch, QueuePlayer, QueueRole, RatedQueuePlayer, Role, Team } from "../../core/models/types.js";
+import type { BalancedMatch, QueuePlayer, QueueRole, Role, Team } from "../../core/models/types.js";
 import { ROLES, isQueueRole, isRole, isTeam } from "../../core/models/types.js";
 import { QueueService, type QueueSnapshot } from "../../core/queue/QueueService.js";
 import { GuildService, type GuildConfigKey } from "../../services/guildService.js";
@@ -1930,57 +1930,43 @@ export class DiscordGateway {
       return null;
     }
 
-    let bestCandidate: ReadyCheckCandidate | null = null;
     for (let poolSize = 10; poolSize <= resolvedQueue.length; poolSize += 1) {
       const pool = resolvedQueue.slice(0, poolSize);
       const ratedPool = await this.matchService.hydrateRatings(pool);
-      const rolePairs = ROLES.map((role) =>
-        this.twoPlayerCombinations(ratedPool.filter((player) => player.role === role)),
+      const selectedPlayers = ROLES.flatMap((role) =>
+        ratedPool.filter((player) => player.role === role).slice(0, 2),
       );
 
-      if (rolePairs.some((pairs) => pairs.length === 0)) {
+      if (selectedPlayers.length < 10) {
         continue;
       }
 
-      for (const selectedPlayers of this.rolePairProducts(rolePairs)) {
-        if (new Set(selectedPlayers.map((player) => player.userId)).size !== 10) {
-          continue;
-        }
-
-        if (!selectedPlayers.every(
-          (player) =>
-            !player.duoUserId ||
-            selectedPlayers.some((candidate) => candidate.userId === player.duoUserId),
-        )) {
-          continue;
-        }
-
-        let match: BalancedMatch;
-        try {
-          match = this.matchmakingService.balance(selectedPlayers);
-        } catch {
-          continue;
-        }
-
-        if (
-          !bestCandidate ||
-          match.balanceScore < bestCandidate.match.balanceScore ||
-          (match.balanceScore === bestCandidate.match.balanceScore &&
-            match.muDifference < bestCandidate.match.muDifference)
-        ) {
-          bestCandidate = {
-            players: selectedPlayers,
-            match,
-          };
-        }
+      if (new Set(selectedPlayers.map((player) => player.userId)).size !== 10) {
+        continue;
       }
 
-      if (bestCandidate && bestCandidate.match.balanceScore < MATCHMAKING_QUALITY_THRESHOLD) {
-        return bestCandidate;
+      if (!selectedPlayers.every(
+        (player) =>
+          !player.duoUserId ||
+          selectedPlayers.some((candidate) => candidate.userId === player.duoUserId),
+      )) {
+        continue;
       }
+
+      let match: BalancedMatch;
+      try {
+        match = this.matchmakingService.balance(selectedPlayers);
+      } catch {
+        continue;
+      }
+
+      return {
+        players: selectedPlayers,
+        match,
+      };
     }
 
-    return bestCandidate;
+    return null;
   }
 
   /**
@@ -2027,40 +2013,6 @@ export class DiscordGateway {
     }
 
     return resolved;
-  }
-
-  private twoPlayerCombinations<T>(items: readonly T[]): [T, T][] {
-    const combinations: [T, T][] = [];
-    for (let leftIndex = 0; leftIndex < items.length; leftIndex += 1) {
-      for (let rightIndex = leftIndex + 1; rightIndex < items.length; rightIndex += 1) {
-        const left = items[leftIndex];
-        const right = items[rightIndex];
-        if (left === undefined || right === undefined) {
-          continue;
-        }
-
-        combinations.push([left, right]);
-      }
-    }
-
-    return combinations;
-  }
-
-  private rolePairProducts(
-    pairSets: readonly [RatedQueuePlayer, RatedQueuePlayer][][],
-  ): RatedQueuePlayer[][] {
-    let products: RatedQueuePlayer[][] = [[]];
-    for (const pairs of pairSets) {
-      const nextProducts: RatedQueuePlayer[][] = [];
-      for (const prefix of products) {
-        for (const pair of pairs) {
-          nextProducts.push([...prefix, ...pair]);
-        }
-      }
-      products = nextProducts;
-    }
-
-    return products;
   }
 
   private async expireDuoInvite(inviteId: string): Promise<void> {

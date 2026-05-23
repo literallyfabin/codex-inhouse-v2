@@ -268,6 +268,43 @@ describe("QueueService", () => {
     expect(matchPlayers).not.toContain("user-2");
   });
 
+  it("keeps FIFO per role when matchmaking starts with an extra player waiting", () => {
+    const queue = new QueueService();
+    const entries: Array<{ userId: string; role: Role; joinedAt: string }> = [
+      { userId: "top-1", role: "TOP", joinedAt: "2026-01-01T00:00:00.000Z" },
+      { userId: "top-2", role: "TOP", joinedAt: "2026-01-01T00:01:00.000Z" },
+      { userId: "jgl-1", role: "JGL", joinedAt: "2026-01-01T00:02:00.000Z" },
+      { userId: "jgl-2", role: "JGL", joinedAt: "2026-01-01T00:03:00.000Z" },
+      { userId: "mid-1", role: "MID", joinedAt: "2026-01-01T00:04:00.000Z" },
+      { userId: "mid-2", role: "MID", joinedAt: "2026-01-01T00:05:00.000Z" },
+      { userId: "adc-1", role: "ADC", joinedAt: "2026-01-01T00:06:00.000Z" },
+      { userId: "adc-2", role: "ADC", joinedAt: "2026-01-01T00:07:00.000Z" },
+      { userId: "mage", role: "SUP", joinedAt: "2026-01-01T00:08:00.000Z" },
+      { userId: "snouq", role: "SUP", joinedAt: "2026-01-01T00:09:00.000Z" },
+      { userId: "flew", role: "SUP", joinedAt: "2026-01-01T00:10:00.000Z" },
+    ];
+
+    let matchPlayers: string[] = [];
+    for (const entry of entries) {
+      const result = queue.join("channel-1", {
+        guildId: "guild-1",
+        channelId: "channel-1",
+        userId: entry.userId,
+        platform: "discord",
+        platformUserId: entry.userId,
+        displayName: entry.userId,
+        role: entry.role,
+        joinedAt: new Date(entry.joinedAt),
+      });
+      matchPlayers = result.matchPlayers?.map((player) => player.userId) ?? matchPlayers;
+    }
+
+    expect(matchPlayers).toHaveLength(10);
+    expect(matchPlayers).toContain("mage");
+    expect(matchPlayers).toContain("snouq");
+    expect(matchPlayers).not.toContain("flew");
+  });
+
   it("joins a duo atomically and keeps the duo link in the snapshot", () => {
     const queue = new QueueService();
     const result = queue.joinGroup("channel-1", [
@@ -299,7 +336,7 @@ describe("QueueService", () => {
     expect(result.snapshot.roles.JGL[0]?.duoUserId).toBe("user-1");
   });
 
-  it("moves a required duo into the starting role queue like the legacy GameQueue", () => {
+  it("does not let a duo displace older players in the target role", () => {
     const queue = new QueueService();
     for (const [index, userId] of ["sup-1", "sup-2"].entries()) {
       queue.join("channel-1", {
@@ -340,9 +377,9 @@ describe("QueueService", () => {
     ]);
 
     expect(result.snapshot.roles.SUP.map((player) => player.userId)).toEqual([
-      "sup-duo",
       "sup-1",
       "sup-2",
+      "sup-duo",
     ]);
   });
 

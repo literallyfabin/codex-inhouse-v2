@@ -417,15 +417,16 @@ export class QueueService {
 
     for (let poolSize = 10; poolSize <= pool.length; poolSize += 1) {
       const subPool = pool.slice(0, poolSize);
-      const rolePairs = ROLES.map((role) => this.twoPlayerCombinations(subPool.filter((player) => player.role === role)));
-      if (rolePairs.some((pairs) => pairs.length === 0)) {
-        continue;
+      const selected = ROLES.flatMap((role) =>
+        subPool.filter((player) => player.role === role).slice(0, 2),
+      );
+
+      if (this.isValidMatchSelection(selected)) {
+        return selected;
       }
 
-      for (const selected of this.rolePairProducts(rolePairs)) {
-        if (this.isValidMatchSelection(selected)) {
-          return selected;
-        }
+      if (selected.length < 10) {
+        continue;
       }
     }
 
@@ -518,29 +519,6 @@ export class QueueService {
         if (!startingQueue[role].some((queuedPlayer) => queuedPlayer.userId === player.userId)) {
           startingQueue[role].push(player);
         }
-
-        if (!player.duoUserId) {
-          continue;
-        }
-
-        const duo = visibleQueue.find(
-          (candidate) =>
-            candidate.userId === player.duoUserId &&
-            candidate.duoUserId === player.userId &&
-            candidate.channelId === player.channelId,
-        );
-        if (!duo || duo.role === "FILL") {
-          continue;
-        }
-
-        const duoQueue = startingQueue[duo.role];
-        if (duoQueue.length >= 2) {
-          duoQueue.pop();
-        }
-
-        if (!duoQueue.some((queuedPlayer) => queuedPlayer.userId === duo.userId)) {
-          duoQueue.push(duo);
-        }
       }
     }
 
@@ -551,36 +529,6 @@ export class QueueService {
       ...startingPlayers,
       ...visibleQueue.filter((player) => !startingKeys.has(queueEntryKey(player))),
     ];
-  }
-
-  private twoPlayerCombinations<T>(items: readonly T[]): [T, T][] {
-    const combinations: [T, T][] = [];
-    for (let leftIndex = 0; leftIndex < items.length; leftIndex += 1) {
-      for (let rightIndex = leftIndex + 1; rightIndex < items.length; rightIndex += 1) {
-        const left = items[leftIndex];
-        const right = items[rightIndex];
-        if (left && right) {
-          combinations.push([left, right]);
-        }
-      }
-    }
-
-    return combinations;
-  }
-
-  private rolePairProducts(pairSets: readonly [QueuePlayer, QueuePlayer][][]): QueuePlayer[][] {
-    let products: QueuePlayer[][] = [[]];
-    for (const pairs of pairSets) {
-      const nextProducts: QueuePlayer[][] = [];
-      for (const prefix of products) {
-        for (const pair of pairs) {
-          nextProducts.push([...prefix, ...pair]);
-        }
-      }
-      products = nextProducts;
-    }
-
-    return products;
   }
 
   private isValidMatchSelection(players: readonly QueuePlayer[]): boolean {
