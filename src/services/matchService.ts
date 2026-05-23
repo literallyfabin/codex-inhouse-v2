@@ -82,6 +82,9 @@ export interface MatchParticipantSummary {
   team: Team;
   displayName: string | null;
   mmrBefore: number;
+  pdl: number | null;
+  tier: Tier | null;
+  division: Division | null;
   championName: string | null;
 }
 
@@ -761,7 +764,8 @@ export class MatchService {
       completed_at: string | null;
     }[],
   ): Promise<MatchSummary[]> {
-    const participantMap = await this.getParticipantSummariesByMatchIds(rows.map((row) => row.id));
+    const guildId = rows[0]?.guild_id;
+    const participantMap = await this.getParticipantSummariesByMatchIds(rows.map((row) => row.id), guildId);
     return rows.map((row) => ({
       id: row.id,
       matchNumber: row.match_number,
@@ -778,6 +782,7 @@ export class MatchService {
 
   private async getParticipantSummariesByMatchIds(
     matchIds: readonly string[],
+    guildId?: string,
   ): Promise<Map<string, MatchParticipantSummary[]>> {
     if (matchIds.length === 0) {
       return new Map();
@@ -792,15 +797,43 @@ export class MatchService {
       throw new Error(`Failed to load match participants: ${error.message}`);
     }
 
+    const userIds = [...new Set(data.map((row) => row.user_id))];
+    const statByUser = new Map<string, { pdl: number; tier: Tier; division: Division }>();
+    if (guildId && userIds.length > 0) {
+      const { data: stats, error: statsError } = await supabase
+        .from("player_stats_global")
+        .select("user_id, pdl, tier, division")
+        .eq("guild_id", guildId)
+        .in("user_id", userIds);
+
+      if (statsError) {
+        throw new Error(`Failed to load participant rank stats: ${statsError.message}`);
+      }
+
+      for (const stat of stats) {
+        const pdl = stat.pdl ?? 0;
+        const classified = classifyByPdl(pdl);
+        statByUser.set(stat.user_id, {
+          pdl,
+          tier: (stat.tier ?? classified.tier) as Tier,
+          division: (stat.division ?? classified.division) as Division,
+        });
+      }
+    }
+
     const byMatch = new Map<string, MatchParticipantSummary[]>();
     for (const row of data) {
       const entries = byMatch.get(row.match_id) ?? [];
+      const stat = statByUser.get(row.user_id);
       entries.push({
         userId: row.user_id,
         role: row.role,
         team: row.team,
         displayName: row.display_name,
         mmrBefore: row.mmr_before,
+        pdl: stat?.pdl ?? null,
+        tier: stat?.tier ?? null,
+        division: stat?.division ?? null,
         championName: row.champion_name,
       });
       byMatch.set(row.match_id, entries);

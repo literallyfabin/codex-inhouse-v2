@@ -165,6 +165,48 @@ const progressBar = (value: number, total: number): string => {
   return `${"▰".repeat(filled)}${"▱".repeat(size - filled)}`;
 };
 
+const tierColors: Record<Tier, number> = {
+  BRONZE: 0xcd7f32,
+  PRATA: 0x95a5a6,
+  OURO: 0xd4a72c,
+  PLATINA: 0x1abc9c,
+  ESMERALDA: 0x2fb875,
+  DIAMANTE: 0x3498db,
+  MESTRE: 0x9b59b6,
+  GRAOMESTRE: 0xe74c3c,
+  CHALLENGER: 0xf1c40f,
+};
+
+const tierColor = (tier: Tier): number => tierColors[tier] ?? COLORS.gold;
+
+const rankTag = (
+  value: { tier: Tier | null; division: Division | null; pdl: number | null },
+  presentation?: DiscordPresentation,
+): string => {
+  if (!value.tier || value.division === null || value.pdl === null) return "";
+  return `${tierIcon(value.tier, presentation?.tierEmojis)} ${formatTier(value.tier, value.division)} \`${value.pdl} PDL\``;
+};
+
+const pdlProgressBar = (pdl: number, tier: Tier, division: Division): string => {
+  if (division === 0) {
+    const apexBase = tier === "CHALLENGER" ? 1400 : tier === "GRAOMESTRE" ? 1100 : 800;
+    return progressBar(Math.max(0, pdl - apexBase), 300);
+  }
+
+  const tierBase: Record<Exclude<Tier, "MESTRE" | "GRAOMESTRE" | "CHALLENGER">, number> = {
+    BRONZE: 0,
+    PRATA: 100,
+    OURO: 200,
+    PLATINA: 300,
+    ESMERALDA: 400,
+    DIAMANTE: 500,
+  };
+  const divisionSize = tier === "DIAMANTE" ? 75 : 25;
+  const base = tierBase[tier as keyof typeof tierBase] ?? 0;
+  const divisionStart = base + (4 - division) * divisionSize;
+  return progressBar(pdl - divisionStart, divisionSize);
+};
+
 const resultLabel: Record<HistoryEntry["result"], string> = {
   WIN: "Win",
   LOSS: "Loss",
@@ -916,9 +958,11 @@ export const buildStatsEmbed = (
   presentation?: DiscordPresentation,
 ): EmbedBuilder => {
   const { global: g, roles } = summary;
+  const tIcon = tierIcon(g.tier, presentation?.tierEmojis);
+  const tStr = formatTier(g.tier, g.division);
   const embed = new EmbedBuilder()
-    .setColor(COLORS.gold)
-    .setTitle(`👤 Perfil do Jogador: ${displayName}`);
+    .setColor(tierColor(g.tier))
+    .setTitle(`${tIcon} ${displayName} - ${tStr}`);
 
   const rankText = g.rank ? `🏆 Rank **#${g.rank}**` : "Sem ranking";
   const globalWinrate = g.totalGames > 0 ? Math.round((g.totalWins / g.totalGames) * 100) : 0;
@@ -932,9 +976,6 @@ export const buildStatsEmbed = (
     const winrate = row.games > 0 ? Math.round((row.wins / row.games) * 100) : 0;
     return `${roleIcon(row.role, presentation)} **${roleName[row.role]}** — ${row.wins}V ${row.losses}D (${winrate}%)`;
   });
-
-  const tIcon = tierIcon(g.tier, presentation?.tierEmojis);
-  const tStr = formatTier(g.tier, g.division);
 
   embed.setDescription(
     [
@@ -1011,7 +1052,8 @@ const renderSummaryTeam = (
 ): string => {
   const rows = sortedParticipants(summary, team).map((participant) => {
     const champion = participant.championName ? ` | ${participant.championName}` : "";
-    return `${roleIcon(participant.role, presentation)} **${participant.displayName ?? participant.userId}**${champion}`;
+    const elo = rankTag(participant, presentation);
+    return `${roleIcon(participant.role, presentation)} **${participant.displayName ?? participant.userId}**${elo ? ` - ${elo}` : ""}${champion}`;
   });
 
   return rows.join("\n") || "Sem jogadores.";
@@ -1023,7 +1065,10 @@ const renderCompactTeam = (
   presentation?: DiscordPresentation,
 ): string =>
   sortedParticipants(summary, team)
-    .map((participant) => `${roleIcon(participant.role, presentation)} ${participant.displayName ?? participant.userId}`)
+    .map((participant) => {
+      const elo = rankTag(participant, presentation);
+      return `${roleIcon(participant.role, presentation)} ${participant.displayName ?? participant.userId}${elo ? ` (${elo})` : ""}`;
+    })
     .join(" | ") || "Sem jogadores";
 
 export const buildMatchSummaryEmbed = (
@@ -1494,19 +1539,6 @@ export const buildDemandEmbed = (
 
 // ── Profile Embed ──────────────────────────────────────────────────
 
-const tierColors: Record<string, number> = {
-  Challenger: 0xf1c40f,
-  "Grão-Mestre": 0xe74c3c,
-  Mestre: 0x9b59b6,
-  Diamante: 0x3498db,
-  Esmeralda: 0x2ecc71,
-  Platina: 0x1abc9c,
-  Ouro: 0xd4a72c,
-  Prata: 0x95a5a6,
-  Bronze: 0xcd7f32,
-  Ferro: 0x607d8b,
-};
-
 const streakText = (streak: number): string => {
   if (streak === 0) return "Nenhuma sequência";
   if (streak > 0) return `🔥 **${streak}** vitória${streak > 1 ? "s" : ""} seguida${streak > 1 ? "s" : ""}`;
@@ -1514,119 +1546,109 @@ const streakText = (streak: number): string => {
   return `❄️ **${abs}** derrota${abs > 1 ? "s" : ""} seguida${abs > 1 ? "s" : ""}`;
 };
 
-const mmrBar = (mmr: number): string => {
-  // Visual bar from 0 to 600 (challenger threshold)
-  const max = 600;
-  const filled = Math.max(0, Math.min(20, Math.round((mmr / max) * 20)));
-  return `${"█".repeat(filled)}${"░".repeat(20 - filled)}`;
-};
-
 export const buildProfileEmbed = (
   profile: PlayerProfile,
   presentation?: DiscordPresentation,
 ): EmbedBuilder[] => {
-  const { global: g, tier, roles } = profile;
-  const color = tierColors[tier.name] ?? COLORS.gold;
+  const { global: g, roles } = profile;
+  const color = tierColor(g.tier);
+  const icon = tierIcon(g.tier, presentation?.tierEmojis);
+  const tierName = formatTier(g.tier, g.division);
+  const rankDisplay = g.rank ? `#${g.rank}` : "Sem ranking";
+  const mainRoleText = profile.mainRole
+    ? `${roleIcon(profile.mainRole, presentation)} ${roleName[profile.mainRole]}`
+    : "Sem rota principal";
+  const record = `${g.totalWins}V ${g.totalLosses}D`;
 
-  // ── Main Card ──
   const mainEmbed = new EmbedBuilder()
     .setColor(color)
-    .setTitle(`${tier.emoji} ${profile.displayName}`)
-    .setThumbnail(
-      profile.avatarUrl ?? "https://media.tenor.com/On7kvXhzmV4AAAAj/loading-gif.gif",
-    );
+    .setTitle(`${icon} ${profile.displayName} - ${tierName}`)
+    .setDescription(
+      [
+        `**${g.pdl} PDL** - Ranking **${rankDisplay}**`,
+        pdlProgressBar(g.pdl, g.tier, g.division),
+        "",
+        `**Partidas:** ${g.totalGames} | **Recorde:** ${record} | **WR:** ${profile.winrate}%`,
+        `**Rota principal:** ${mainRoleText}`,
+        `**Sequencia atual:** ${streakText(profile.streak)}`,
+      ].join("\n"),
+    )
+    .setFooter({ text: "MMR segue oculto e e usado apenas para balanceamento." });
 
-  // Header section
-  const rankDisplay = g.rank ? `#${g.rank}` : "—";
-  const headerLines = [
-    `# ${tier.emoji} ${tier.name}`,
-    "",
-    `> **MMR** \`${Math.round(g.mmr)}\` — **Rank** \`${rankDisplay}\``,
-    `> ${mmrBar(g.mmr)}`,
-    "",
-    `📊 **${g.totalGames}** jogos | ✅ **${g.totalWins}**V ❌ **${g.totalLosses}**D | 🎯 **${profile.winrate}%** WR`,
-    streakText(profile.streak),
-  ];
+  if (profile.avatarUrl) {
+    mainEmbed.setThumbnail(profile.avatarUrl);
+  }
 
-  mainEmbed.setDescription(headerLines.join("\n"));
-
-  // Role breakdown field
   if (roles.length > 0) {
-    const mainRoleText = profile.mainRole
-      ? `${roleIcon(profile.mainRole, presentation)} **${roleName[profile.mainRole]}**`
-      : "N/A";
-
     const roleLines = roles.map((r) => {
       const wr = r.games > 0 ? Math.round((r.wins / r.games) * 100) : 0;
       const bar = progressBar(r.games, g.totalGames);
-      return `${roleIcon(r.role, presentation)} **${roleName[r.role]}** ${bar} ${r.games} jogos (${wr}% WR)`;
+      return `${roleIcon(r.role, presentation)} **${roleName[r.role]}** ${bar} ${r.games} jogos - ${wr}% WR`;
     });
 
     mainEmbed.addFields({
-      name: `🎮 Rota Principal: ${mainRoleText}`,
+      name: "Desempenho por rota",
       value: roleLines.join("\n"),
       inline: false,
     });
   }
 
-  // Versatility
   if (profile.roleReport) {
     const vBar = progressBar(profile.roleReport.roles.length, ROLES.length);
     let label = "Especialista";
     if (profile.roleReport.versatility >= 0.8) label = "Flexível";
     else if (profile.roleReport.versatility >= 0.6) label = "Variado";
     else if (profile.roleReport.versatility >= 0.4) label = "Moderado";
+
     mainEmbed.addFields({
-      name: "🎭 Versatilidade",
+      name: "Versatilidade",
       value: `${vBar} **${label}** (${profile.roleReport.roles.length}/${ROLES.length} roles)`,
       inline: false,
     });
   }
-
-  // ── Social Card ──
-  const socialEmbed = new EmbedBuilder().setColor(color);
 
   const socialLines: string[] = [];
 
   if (profile.synergy) {
     const wr = Math.round(profile.synergy.winrate * 100);
     socialLines.push(
-      `🤝 **Melhor Duo:** ${profile.synergy.displayName}`,
-      `> ${profile.synergy.games} jogos juntos — **${wr}%** WR | ${profile.synergy.wins}V`,
+      `**Melhor duo:** ${profile.synergy.displayName}`,
+      `${profile.synergy.games} jogos juntos - ${wr}% WR - ${profile.synergy.wins}V`,
     );
   }
 
   if (profile.nemesis) {
     const wr = Math.round(profile.nemesis.winrate * 100);
     socialLines.push(
-      `⚔️ **Nemesis:** ${profile.nemesis.displayName}`,
-      `> ${profile.nemesis.games} confrontos — **${wr}%** vitórias do inimigo | ${profile.nemesis.wins}V`,
+      `**Nemesis:** ${profile.nemesis.displayName}`,
+      `${profile.nemesis.games} confrontos - ${wr}% vitorias do rival`,
     );
   }
 
-  if (socialLines.length > 0) {
-    socialEmbed.setDescription(socialLines.join("\n"));
-  }
+  const socialEmbed = new EmbedBuilder()
+    .setColor(color)
+    .setTitle(`Resumo competitivo - ${profile.displayName}`);
 
-  // Recent matches field
+  if (socialLines.length > 0) socialEmbed.setDescription(socialLines.join("\n"));
+
   if (profile.recentMatches.length > 0) {
     const matchLines = profile.recentMatches.map((entry) => {
-      const icon = entry.result === "WIN" ? "🟢" : entry.result === "LOSS" ? "🔴" : "⚪";
+      const icon = entry.result === "WIN" ? "V" : entry.result === "LOSS" ? "D" : "-";
       const champion = entry.championName ? ` (${entry.championName})` : "";
-      return `${icon} ${roleIcon(entry.role, presentation)}${champion} \`${Math.round(entry.mmrBefore)} MMR\``;
+      return `\`${icon}\` ${roleIcon(entry.role, presentation)} ${formatMatchLabel(entry.matchNumber, entry.matchId)}${champion}`;
     });
 
     socialEmbed.addFields({
-      name: "📜 Últimas Partidas",
+      name: "Ultimas partidas",
       value: matchLines.join("\n"),
       inline: false,
     });
   }
 
-  // Footer with animated gif as image
-  socialEmbed
-    .setImage("https://media.tenor.com/ZTJc_gDOuOIAAAAd/league-of-legends-lol.gif")
-    .setFooter({ text: `Perfil gerado • ${profile.displayName}` });
+  if (profile.avatarUrl) {
+    socialEmbed.setThumbnail(profile.avatarUrl);
+  }
+  socialEmbed.setFooter({ text: `${tierName} - ${g.pdl} PDL` });
 
   const embeds = [mainEmbed];
   if (socialLines.length > 0 || profile.recentMatches.length > 0) {

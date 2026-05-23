@@ -166,7 +166,6 @@ export interface PlayerProfile {
   global: GlobalPlayerStats;
   roles: PlayerRoleSummary[];
   mainRole: Role | null;
-  tier: { name: string; emoji: string };
   winrate: number;
   streak: number; // positive = win, negative = loss
   recentMatches: HistoryEntry[];
@@ -883,19 +882,6 @@ export class StatsService {
     return history[0]?.matchId ?? null;
   }
 
-  private getTier(mmr: number): { name: string; emoji: string } {
-    if (mmr >= 600) return { name: "Challenger", emoji: "👑" };
-    if (mmr >= 500) return { name: "Grão-Mestre", emoji: "⚜️" };
-    if (mmr >= 420) return { name: "Mestre", emoji: "🔮" };
-    if (mmr >= 360) return { name: "Diamante", emoji: "💎" };
-    if (mmr >= 300) return { name: "Esmeralda", emoji: "🟢" };
-    if (mmr >= 250) return { name: "Platina", emoji: "🔵" };
-    if (mmr >= 200) return { name: "Ouro", emoji: "🥇" };
-    if (mmr >= 150) return { name: "Prata", emoji: "🥈" };
-    if (mmr >= 100) return { name: "Bronze", emoji: "🥉" };
-    return { name: "Ferro", emoji: "⚙️" };
-  }
-
   private computeStreak(history: HistoryEntry[]): number {
     if (history.length === 0) return 0;
     const first = history[0]!;
@@ -999,7 +985,6 @@ export class StatsService {
       global: summary.global,
       roles: summary.roles,
       mainRole: mainRole?.role ?? null,
-      tier: this.getTier(summary.global.mmr),
       winrate: summary.global.totalGames > 0
         ? Math.round((summary.global.totalWins / summary.global.totalGames) * 100)
         : 0,
