@@ -1,6 +1,7 @@
 import type { MatchStatus, Role, Team, WinningTeam } from "../core/models/types.js";
 import { ROLES } from "../core/models/types.js";
 import { conservativeMmr } from "../core/matchmaking/trueskillMath.js";
+import { classifyByPdl, type Division, type Tier } from "../core/tier/tier.js";
 import { supabase } from "./supabaseClient.js";
 
 interface MatchRow {
@@ -32,6 +33,9 @@ interface GlobalStatRow {
   mu: number;
   sigma: number;
   mmr: number;
+  pdl?: number | null;
+  tier?: string | null;
+  division?: number | null;
 }
 
 // Per-role W/L breakdown (no MMR — MMR is global)
@@ -46,7 +50,12 @@ export interface PlayerRoleSummary {
 export interface GlobalPlayerStats {
   mu: number;
   sigma: number;
+  /** Hidden internal MMR — used only by admin debug surfaces in S2. */
   mmr: number;
+  /** Visible ranking points (Season 2+). */
+  pdl: number;
+  tier: Tier;
+  division: Division;
   rank: number | null;
   totalGames: number;
   totalWins: number;
@@ -74,7 +83,11 @@ export interface RankingEntry {
   role?: Role;
   mu: number;
   sigma: number;
+  /** Hidden in S2 surfaces — used internally for matchmaking. */
   mmr: number;
+  pdl: number;
+  tier: Tier;
+  division: Division;
   games: number;
   wins: number;
   losses: number;
@@ -92,11 +105,16 @@ export interface HistoryEntry {
   createdAt: string;
 }
 
-export interface MmrHistoryEntry {
-  role: Role;
+export interface PdlHistoryEntry {
   matchId: string;
   matchNumber: number | null;
-  mmr: number;
+  pdlBefore: number;
+  pdlAfter: number;
+  pdlDelta: number;
+  tierBefore: Tier;
+  tierAfter: Tier;
+  divisionBefore: Division;
+  divisionAfter: Division;
   createdAt: string;
   isCurrent: boolean;
 }
@@ -116,7 +134,7 @@ export interface RoleReportResult {
 }
 
 export interface ServerHighlights {
-  topMmr: { displayName: string; mmr: number } | null;
+  topPdl: { displayName: string; pdl: number; tier: Tier; division: Division } | null;
   topWinrate: { displayName: string; winrate: number; games: number } | null;
   topStreak: { displayName: string; streak: number } | null;
   bestDuo: { name1: string; name2: string; winrate: number; games: number } | null;
@@ -160,6 +178,17 @@ export interface PlayerProfile {
 const displayMmr = (stat: Pick<GlobalStatRow, "mu" | "sigma" | "mmr">): number =>
   Number.isFinite(stat.mmr) ? stat.mmr : conservativeMmr(stat.mu, stat.sigma);
 
+const tierFromRow = (row: { pdl?: number | null; tier?: string | null; division?: number | null }) => {
+  const pdl = row.pdl ?? 0;
+  // Trust DB tier/division if present; otherwise derive from PDL.
+  const cls = classifyByPdl(pdl);
+  return {
+    pdl,
+    tier: (row.tier as Tier | undefined) ?? cls.tier,
+    division: ((row.division ?? cls.division) as Division),
+  };
+};
+
 export class StatsService {
   async getPlayerSummary(guildId: string, userId: string): Promise<PlayerSummary | null> {
     const [globalStat, participantRows] = await Promise.all([
@@ -192,11 +221,23 @@ export class StatsService {
     const mu = globalStat?.mu ?? 25;
     const sigma = globalStat?.sigma ?? 25 / 3;
     const mmr = globalStat ? displayMmr(globalStat) : conservativeMmr(25, 25 / 3);
+    const tierInfo = tierFromRow(globalStat ?? {});
 
-    const rank = await this.getGlobalRank(guildId, mmr);
+    const rank = await this.getGlobalRankByPdl(guildId, tierInfo.pdl);
 
     return {
-      global: { mu, sigma, mmr, rank, totalGames, totalWins, totalLosses },
+      global: {
+        mu,
+        sigma,
+        mmr,
+        pdl: tierInfo.pdl,
+        tier: tierInfo.tier,
+        division: tierInfo.division,
+        rank,
+        totalGames,
+        totalWins,
+        totalLosses,
+      },
       roles,
     };
   }
@@ -233,7 +274,7 @@ export class StatsService {
     const userIds = [...records.keys()];
     const { data: stats, error } = await supabase
       .from("player_stats_global")
-      .select("guild_id, user_id, mu, sigma, mmr")
+      .select("guild_id, user_id, mu, sigma, mmr, pdl, tier, division")
       .eq("guild_id", guildId)
       .in("user_id", userIds);
 
@@ -245,6 +286,7 @@ export class StatsService {
     for (const stat of stats) {
       const record = records.get(stat.user_id);
       if (!record) continue;
+      const t = tierFromRow(stat);
 
       entries.push({
         userId: stat.user_id,
@@ -253,6 +295,9 @@ export class StatsService {
         mu: stat.mu,
         sigma: stat.sigma,
         mmr: displayMmr(stat),
+        pdl: t.pdl,
+        tier: t.tier,
+        division: t.division,
         games: record.games,
         wins: record.wins,
         losses: record.losses,
@@ -261,7 +306,7 @@ export class StatsService {
     }
 
     return entries
-      .sort((a, b) => b.mmr - a.mmr)
+      .sort((a, b) => b.pdl - a.pdl)
       .slice(0, limit)
       .map((entry, index) => ({ ...entry, rank: index + 1 }));
   }
@@ -294,64 +339,61 @@ export class StatsService {
       .slice(0, limit);
   }
 
-  async getMmrHistory(
+  async getPdlHistory(
     guildId: string,
     userId: string,
-    role?: Role,
     limit = 30,
-  ): Promise<MmrHistoryEntry[]> {
-    const participants = await this.getParticipantRowsForUser(userId);
-    const matches = await this.getMatchesByIds(
-      guildId,
-      participants.map((row) => row.match_id),
-    );
+  ): Promise<PdlHistoryEntry[]> {
+    const { data: rows, error } = await supabase
+      .from("pdl_history")
+      .select(
+        "match_id, pdl_before, pdl_after, pdl_delta, tier_before, tier_after, division_before, division_after, created_at",
+      )
+      .eq("guild_id", guildId)
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(limit);
 
-    const history: MmrHistoryEntry[] = [];
-    for (const participant of participants) {
-      const match = matches.get(participant.match_id);
-      if (!match || (role && participant.role !== role)) continue;
+    if (error) throw new Error(`Failed to load pdl history: ${error.message}`);
 
+    const chronologicalRows = [...(rows ?? [])].reverse();
+    const matchIds = chronologicalRows.map((r) => r.match_id);
+    const matches = await this.getMatchesByIds(guildId, matchIds);
+
+    const history: PdlHistoryEntry[] = chronologicalRows.map((r) => ({
+      matchId: r.match_id,
+      matchNumber: matches.get(r.match_id)?.match_number ?? null,
+      pdlBefore: r.pdl_before,
+      pdlAfter: r.pdl_after,
+      pdlDelta: r.pdl_delta,
+      tierBefore: r.tier_before as Tier,
+      tierAfter: r.tier_after as Tier,
+      divisionBefore: r.division_before as Division,
+      divisionAfter: r.division_after as Division,
+      createdAt: r.created_at,
+      isCurrent: false,
+    }));
+
+    // Append current point.
+    const globalStat = await this.getGlobalStat(guildId, userId);
+    if (globalStat) {
+      const t = tierFromRow(globalStat);
       history.push({
-        role: participant.role,
-        matchId: participant.match_id,
-        matchNumber: match.match_number,
-        mmr: participant.mmr_before,
-        createdAt: match.created_at,
-        isCurrent: false,
+        matchId: "current",
+        matchNumber: null,
+        pdlBefore: t.pdl,
+        pdlAfter: t.pdl,
+        pdlDelta: 0,
+        tierBefore: t.tier,
+        tierAfter: t.tier,
+        divisionBefore: t.division,
+        divisionAfter: t.division,
+        createdAt: new Date().toISOString(),
+        isCurrent: true,
       });
     }
 
-    history.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-
-    // Append current global MMR as the final point
-    const globalStat = await this.getGlobalStat(guildId, userId);
-    if (globalStat) {
-      const now = new Date().toISOString();
-      const currentMmr = displayMmr(globalStat);
-
-      if (!role) {
-        // One single current point for global view
-        history.push({
-          role: ROLES[0],
-          matchId: "current",
-          matchNumber: null,
-          mmr: currentMmr,
-          createdAt: now,
-          isCurrent: true,
-        });
-      } else {
-        history.push({
-          role,
-          matchId: "current",
-          matchNumber: null,
-          mmr: currentMmr,
-          createdAt: now,
-          isCurrent: true,
-        });
-      }
-    }
-
-    return history.slice(-limit);
+    return history;
   }
 
   async getComparison(
@@ -552,16 +594,19 @@ export class StatsService {
     const names = await this.getDisplayNames([...allUserIds]);
     const name = (userId: string) => names.get(userId) ?? "Desconhecido";
 
-    // --- Top MMR ---
+    // --- Top PDL ---
     const { data: topStat } = await supabase
       .from("player_stats_global")
-      .select("user_id, mu, sigma, mmr")
+      .select("user_id, mu, sigma, mmr, pdl, tier, division")
       .eq("guild_id", guildId)
-      .order("mmr", { ascending: false })
+      .order("pdl", { ascending: false })
       .limit(1);
 
-    const topMmr = topStat?.[0]
-      ? { displayName: name(topStat[0].user_id), mmr: displayMmr(topStat[0]) }
+    const topPdl = topStat?.[0]
+      ? (() => {
+          const t = tierFromRow(topStat[0]);
+          return { displayName: name(topStat[0].user_id), pdl: t.pdl, tier: t.tier, division: t.division };
+        })()
       : null;
 
     // --- Per-user W/L ---
@@ -717,7 +762,7 @@ export class StatsService {
       }
     }
 
-    return { topMmr, topWinrate, topStreak, bestDuo, biggestRivalry, mostActive, bestFill, worstFill };
+    return { topPdl, topWinrate, topStreak, bestDuo, biggestRivalry, mostActive, bestFill, worstFill };
   }
 
   // ---------- private helpers ----------
@@ -725,7 +770,7 @@ export class StatsService {
   private async getGlobalStat(guildId: string, userId: string): Promise<GlobalStatRow | null> {
     const { data, error } = await supabase
       .from("player_stats_global")
-      .select("guild_id, user_id, mu, sigma, mmr")
+      .select("guild_id, user_id, mu, sigma, mmr, pdl, tier, division")
       .eq("guild_id", guildId)
       .eq("user_id", userId)
       .maybeSingle();
@@ -734,12 +779,12 @@ export class StatsService {
     return data;
   }
 
-  private async getGlobalRank(guildId: string, mmr: number): Promise<number | null> {
+  private async getGlobalRankByPdl(guildId: string, pdl: number): Promise<number | null> {
     const { count, error } = await supabase
       .from("player_stats_global")
       .select("*", { count: "exact", head: true })
       .eq("guild_id", guildId)
-      .gt("mmr", mmr);
+      .gt("pdl", pdl);
 
     if (error) return null;
     return (count ?? 0) + 1;

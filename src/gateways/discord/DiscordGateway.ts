@@ -18,6 +18,7 @@ import { env } from "../../config/env.js";
 import { MatchmakingService } from "../../core/matchmaking/MatchmakingService.js";
 import type { BalancedMatch, QueuePlayer, QueueRole, Role, Team } from "../../core/models/types.js";
 import { ROLES, isQueueRole, isRole, isTeam } from "../../core/models/types.js";
+import { TIERS as TIERS_LIST, TIER_EMOJI_NAMES as TIER_EMOJI_NAMES_MAP } from "../../core/tier/tier.js";
 import { QueueService, type QueueSnapshot } from "../../core/queue/QueueService.js";
 import { GuildService, type GuildConfigKey } from "../../services/guildService.js";
 import { MatchService } from "../../services/matchService.js";
@@ -27,6 +28,24 @@ import { StatsService, type RankingEntry } from "../../services/statsService.js"
 import { UserService } from "../../services/userService.js";
 import { riotApiService } from "../../services/riotApiService.js";
 import { riotOAuthService } from "../../services/riotOAuthService.js";
+import {
+  seasonArchiveService,
+  type SeasonComeback,
+  type SeasonHighlights,
+  type SeasonOverview,
+  type SeasonRankingEntry,
+} from "../../services/seasonArchiveService.js";
+import {
+  MEMORIAL_RANKING_PAGE_SIZE,
+  buildMemorialButtons,
+  buildMemorialClosingEmbed,
+  buildMemorialComebackEmbed,
+  buildMemorialHeaderEmbed,
+  buildMemorialHighlightsEmbed,
+  buildMemorialPodiumEmbed,
+  buildMemorialRankingEmbed,
+} from "./memorialComponents.js";
+import { parseMemorialButtonId } from "./components.js";
 import {
   RANKING_PAGE_SIZE,
   ROLE_EMOJI_NAMES,
@@ -39,7 +58,7 @@ import {
   buildAlreadyLinkedEmbed,
   buildMatchEmbed,
   buildMatchSummaryEmbed,
-  buildMmrHistoryEmbed,
+  buildPdlHistoryEmbed,
   buildQueueButtons,
   buildQueueEmbed,
   buildRankingButtons,
@@ -90,6 +109,15 @@ interface RankingSession {
   role?: Role;
 }
 
+interface MemorialSession {
+  overview: SeasonOverview;
+  highlights: SeasonHighlights | null;
+  comeback: SeasonComeback | null;
+  ranking: SeasonRankingEntry[];
+  page: number;
+  createdAt: number;
+}
+
 interface PendingReadyCheck {
   id: string;
   guildId: string;
@@ -122,6 +150,7 @@ export class DiscordGateway {
   private readonly client = new Client({ intents: [GatewayIntentBits.Guilds] });
   private readonly pendingValidations = new Map<string, PendingValidation>();
   private readonly rankingSessions = new Map<string, RankingSession>();
+  private readonly memorialSessions = new Map<string, MemorialSession>();
   private readonly pendingReadyChecks = new Map<string, PendingReadyCheck>();
   private readonly pendingDuoInvites = new Map<string, PendingDuoInvite>();
   private readonly presentationsByGuild = new Map<string, DiscordPresentation>();
@@ -289,8 +318,12 @@ export class DiscordGateway {
         await this.handleLastMatch(interaction);
         return;
 
-      case "mmr-history":
-        await this.handleMmrHistory(interaction);
+      case "pdl-history":
+        await this.handlePdlHistory(interaction);
+        return;
+
+      case "admin-show-mmr":
+        await this.handleAdminShowMmr(interaction);
         return;
 
       case "champion":
@@ -319,6 +352,10 @@ export class DiscordGateway {
 
       case "demanda":
         await this.handleDemand(interaction);
+        return;
+
+      case "memorial-season-1":
+        await this.handleMemorialSeason1(interaction);
         return;
 
       case "won":
@@ -400,6 +437,10 @@ export class DiscordGateway {
     }
 
     if (await this.handleValidationButton(interaction)) {
+      return;
+    }
+
+    if (await this.handleMemorialButton(interaction)) {
       return;
     }
 
@@ -784,7 +825,8 @@ export class DiscordGateway {
     }
 
     const { buildTopEmbed } = await import("./components.js");
-    await interaction.editReply({ embeds: [buildTopEmbed(highlights)] });
+    const presentation = await this.presentationForGuild(interaction.guildId);
+    await interaction.editReply({ embeds: [buildTopEmbed(highlights, presentation)] });
   }
 
   private async handleRoleReport(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -863,6 +905,105 @@ export class DiscordGateway {
     const { buildDemandEmbed } = await import("./components.js");
     const presentation = await this.presentationForGuild(interaction.guildId);
     await interaction.editReply({ embeds: [buildDemandEmbed(demand, presentation)] });
+  }
+
+  private async handleMemorialSeason1(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    await interaction.deferReply();
+
+    let overview: SeasonOverview;
+    let highlights: SeasonHighlights | null;
+    let comeback: SeasonComeback | null;
+    let ranking: SeasonRankingEntry[];
+
+    try {
+      [overview, highlights, comeback, ranking] = await Promise.all([
+        seasonArchiveService.getOverview(interaction.guildId),
+        seasonArchiveService.getHighlights(interaction.guildId),
+        seasonArchiveService.getComeback(interaction.guildId),
+        seasonArchiveService.getRanking(interaction.guildId, 500),
+      ]);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      await interaction.editReply(
+        `Nao consegui carregar o memorial da Season 1. As tabelas de arquivo (\`*_s1\`) existem? Detalhe: ${msg}`,
+      );
+      return;
+    }
+
+    if (overview.totalCompletedMatches === 0 && ranking.length === 0) {
+      await interaction.editReply("Sem dados arquivados da Season 1 para este servidor.");
+      return;
+    }
+
+    const sessionId = randomUUID();
+    const session: MemorialSession = {
+      overview,
+      highlights,
+      comeback,
+      ranking,
+      page: 0,
+      createdAt: Date.now(),
+    };
+    this.memorialSessions.set(sessionId, session);
+
+    const totalPages = Math.max(1, Math.ceil(ranking.length / MEMORIAL_RANKING_PAGE_SIZE));
+    const embeds = [
+      buildMemorialHeaderEmbed(overview),
+      buildMemorialPodiumEmbed(ranking),
+      buildMemorialHighlightsEmbed(highlights),
+      buildMemorialComebackEmbed(comeback),
+      buildMemorialRankingEmbed(ranking, 0),
+      buildMemorialClosingEmbed(),
+    ];
+
+    await interaction.editReply({
+      embeds,
+      components: buildMemorialButtons(sessionId, 0, totalPages),
+    });
+  }
+
+  private async handleMemorialButton(interaction: ButtonInteraction): Promise<boolean> {
+    const parsed = parseMemorialButtonId(interaction.customId);
+    if (!parsed) return false;
+
+    const session = this.memorialSessions.get(parsed.sessionId);
+    if (!session) {
+      await interaction.reply({
+        content: "Esse memorial expirou. Rode `/memorial-season-1` de novo.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return true;
+    }
+
+    if (!(await this.deferButtonUpdate(interaction))) {
+      return true;
+    }
+
+    const totalPages = Math.max(1, Math.ceil(session.ranking.length / MEMORIAL_RANKING_PAGE_SIZE));
+    session.page =
+      parsed.direction === "next"
+        ? Math.min(session.page + 1, totalPages - 1)
+        : Math.max(session.page - 1, 0);
+
+    const embeds = [
+      buildMemorialHeaderEmbed(session.overview),
+      buildMemorialPodiumEmbed(session.ranking),
+      buildMemorialHighlightsEmbed(session.highlights),
+      buildMemorialComebackEmbed(session.comeback),
+      buildMemorialRankingEmbed(session.ranking, session.page),
+      buildMemorialClosingEmbed(),
+    ];
+
+    await interaction.message.edit({
+      embeds,
+      components: buildMemorialButtons(parsed.sessionId, session.page, totalPages),
+    });
+    return true;
   }
 
   private async handleRanking(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -1186,24 +1327,56 @@ export class DiscordGateway {
     }
   }
 
-  private async handleMmrHistory(interaction: ChatInputCommandInteraction): Promise<void> {
+  private async handlePdlHistory(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!interaction.guildId) {
       await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    const roleValue = interaction.options.getString("rota");
-    const role = roleValue && isRole(roleValue) ? roleValue : undefined;
     const limit = interaction.options.getInteger("limite") ?? 30;
     const target = interaction.options.getUser("jogador") ?? interaction.user;
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
-    const history = await this.statsService.getMmrHistory(interaction.guildId, user.id, role, limit);
+    const history = await this.statsService.getPdlHistory(interaction.guildId, user.id, limit);
     const presentation = await this.presentationForGuild(interaction.guildId);
     await interaction.editReply({
-      embeds: [buildMmrHistoryEmbed(target.displayName, history, role, presentation)],
+      embeds: [buildPdlHistoryEmbed(target.displayName, history, presentation)],
     });
+  }
+
+  private async handleAdminShowMmr(interaction: ChatInputCommandInteraction): Promise<void> {
+    if (!interaction.guildId) {
+      await interaction.reply({ content: "Use este comando dentro de um servidor.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    if (!(await this.ensureAdminUser(interaction, "ver MMR debug"))) {
+      return;
+    }
+
+    const target = interaction.options.getUser("jogador", true);
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
+    const summary = await this.statsService.getPlayerSummary(interaction.guildId, user.id);
+
+    if (!summary) {
+      await interaction.editReply(`${target.displayName} sem dados.`);
+      return;
+    }
+
+    const g = summary.global;
+    await interaction.editReply(
+      [
+        `**Debug MMR — ${target.displayName}**`,
+        `mu: \`${g.mu.toFixed(3)}\``,
+        `sigma: \`${g.sigma.toFixed(3)}\``,
+        `MMR (display): \`${Math.round(g.mmr)}\``,
+        `PDL: \`${g.pdl}\``,
+        `Tier/Div: \`${g.tier}/${g.division}\``,
+        `Partidas: ${g.totalGames} (${g.totalWins}V ${g.totalLosses}D)`,
+      ].join("\n"),
+    );
   }
 
   private async handleChampion(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -2230,6 +2403,7 @@ export class DiscordGateway {
   private async refreshPresentation(guild: Guild): Promise<DiscordPresentation> {
     const emojis = await guild.emojis.fetch().catch(() => guild.emojis.cache);
     const roleEmojis: DiscordPresentation["roleEmojis"] = {};
+    const tierEmojis: DiscordPresentation["tierEmojis"] = {};
 
     for (const role of [...ROLES, "FILL" as const]) {
       const expectedName = ROLE_EMOJI_NAMES[role];
@@ -2239,7 +2413,15 @@ export class DiscordGateway {
       }
     }
 
-    const presentation: DiscordPresentation = { roleEmojis };
+    for (const tier of TIERS_LIST) {
+      const expectedName = TIER_EMOJI_NAMES_MAP[tier];
+      const emoji = emojis.find((candidate) => candidate.name?.toUpperCase() === expectedName);
+      if (emoji?.name) {
+        tierEmojis[tier] = `<${emoji.animated ? "a" : ""}:${emoji.name}:${emoji.id}>`;
+      }
+    }
+
+    const presentation: DiscordPresentation = { roleEmojis, tierEmojis };
     this.presentationsByGuild.set(guild.id, presentation);
     return presentation;
   }
@@ -2319,6 +2501,7 @@ export class DiscordGateway {
     }
 
     const { buildTopEmbed } = await import("./components.js");
+    const presentation = await this.presentationForGuild(guildId);
     for (const marked of channels) {
       const channel = await this.fetchTextChannel(marked.channelId);
       if (!channel?.isSendable()) {
@@ -2328,7 +2511,7 @@ export class DiscordGateway {
       await this.clearManagedMessages(channel, (title) => title.includes("Destaques") || title.includes("Top"), {
         deleteNonBotMessages: true,
       });
-      await channel.send({ embeds: [buildTopEmbed(highlights)] });
+      await channel.send({ embeds: [buildTopEmbed(highlights, presentation)] });
     }
   }
 

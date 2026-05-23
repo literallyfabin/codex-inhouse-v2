@@ -66,6 +66,9 @@ export interface Database {
           mu: number;
           sigma: number;
           mmr: number;
+          pdl: number;
+          tier: string;
+          division: number;
           updated_at: string;
         };
         Insert: {
@@ -73,12 +76,60 @@ export interface Database {
           user_id: string;
           mu?: number;
           sigma?: number;
+          pdl?: number;
+          tier?: string;
+          division?: number;
           updated_at?: string;
         };
         Update: {
           mu?: number;
           sigma?: number;
+          pdl?: number;
+          tier?: string;
+          division?: number;
           updated_at?: string;
+        };
+        Relationships: [];
+      };
+      pdl_history: {
+        Row: {
+          id: string;
+          guild_id: string;
+          user_id: string;
+          match_id: string;
+          pdl_before: number;
+          pdl_after: number;
+          pdl_delta: number;
+          tier_before: string;
+          tier_after: string;
+          division_before: number;
+          division_after: number;
+          mmr_before: number;
+          mmr_after: number;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          guild_id: string;
+          user_id: string;
+          match_id: string;
+          pdl_before: number;
+          pdl_after: number;
+          pdl_delta: number;
+          tier_before: string;
+          tier_after: string;
+          division_before: number;
+          division_after: number;
+          mmr_before: number;
+          mmr_after: number;
+          created_at?: string;
+        };
+        Update: {
+          pdl_after?: number;
+          pdl_delta?: number;
+          tier_after?: string;
+          division_after?: number;
+          mmr_after?: number;
         };
         Relationships: [];
       };

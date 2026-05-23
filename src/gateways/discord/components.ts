@@ -8,10 +8,19 @@ import {
 } from "discord.js";
 import type { BalancedMatch, QueuePlayer, QueueRole, Role, Team } from "../../core/models/types.js";
 import { ROLES } from "../../core/models/types.js";
+import {
+  TIERS,
+  TIER_EMOJI_NAMES,
+  TIER_LABEL,
+  formatTier,
+  tierIcon,
+  type Division,
+  type Tier,
+} from "../../core/tier/tier.js";
 import type { QueueSnapshot } from "../../core/queue/QueueService.js";
 import type {
   HistoryEntry,
-  MmrHistoryEntry,
+  PdlHistoryEntry,
   PlayerProfile,
   PlayerSummary,
   RankingEntry,
@@ -26,6 +35,7 @@ export const RANKING_PAGE_SIZE = 15;
 
 export interface DiscordPresentation {
   roleEmojis?: Partial<Record<QueueRole, string>>;
+  tierEmojis?: Partial<Record<Tier, string>>;
 }
 
 export const roleButtonId = (role: QueueRole): string => `inhouse:join:${role}`;
@@ -246,21 +256,21 @@ export const adminWinCommand = new SlashCommandBuilder()
 
 export const statsCommand = new SlashCommandBuilder()
   .setName("stats")
-  .setDescription("Mostra rank, MMR e W/L por rota.")
+  .setDescription("Mostra elo, PDL e W/L por rota.")
   .addUserOption((option) =>
     option.setName("jogador").setDescription("Jogador alvo. Vazio mostra seus stats."),
   );
 
 export const rankCommand = new SlashCommandBuilder()
   .setName("rank")
-  .setDescription("Mostra seu rank, MMR e W/L por rota.")
+  .setDescription("Mostra seu elo, PDL e W/L por rota.")
   .addUserOption((option) =>
     option.setName("jogador").setDescription("Jogador alvo. Vazio mostra seus stats."),
   );
 
 export const rankingCommand = new SlashCommandBuilder()
   .setName("ranking")
-  .setDescription("Mostra o ranking de MMR do servidor.")
+  .setDescription("Mostra o ranking de PDL do servidor.")
   .addStringOption((option) =>
     option
       .setName("rota")
@@ -325,17 +335,11 @@ export const lastMatchCommand = new SlashCommandBuilder()
     option.setName("jogador").setDescription("Jogador alvo. Vazio mostra a ultima partida do servidor."),
   );
 
-export const mmrHistoryCommand = new SlashCommandBuilder()
-  .setName("mmr-history")
-  .setDescription("Mostra a evolucao de MMR do jogador.")
+export const pdlHistoryCommand = new SlashCommandBuilder()
+  .setName("pdl-history")
+  .setDescription("Mostra a evolucao de PDL do jogador.")
   .addUserOption((option) =>
     option.setName("jogador").setDescription("Jogador alvo. Vazio mostra voce."),
-  )
-  .addStringOption((option) =>
-    option
-      .setName("rota")
-      .setDescription("Filtra por rota.")
-      .addChoices(...ROLES.map((role) => ({ name: role, value: role }))),
   )
   .addIntegerOption((option) =>
     option
@@ -465,6 +469,13 @@ export const adminCancelUserCommand = new SlashCommandBuilder()
     option.setName("jogador").setDescription("Jogador com partida em andamento.").setRequired(true),
   );
 
+export const adminShowMmrCommand = new SlashCommandBuilder()
+  .setName("admin-show-mmr")
+  .setDescription("Admin: mostra MMR/mu/sigma internos de um jogador (debug).")
+  .addUserOption((option) =>
+    option.setName("jogador").setDescription("Jogador alvo.").setRequired(true),
+  );
+
 export const devCreateMatchCommand = new SlashCommandBuilder()
   .setName("dev-create-match")
   .setDescription("Cria uma partida fake com voce + 9 jogadores teste.")
@@ -475,6 +486,22 @@ export const devCreateMatchCommand = new SlashCommandBuilder()
       .setRequired(true)
       .addChoices(...ROLES.map((role) => ({ name: role, value: role }))),
   );
+
+export const memorialSeason1Command = new SlashCommandBuilder()
+  .setName("memorial-season-1")
+  .setDescription("Encerra a Season 1 com podio, highlights, volta por cima e ranking completo.");
+
+export const memorialPrevButtonId = (sessionId: string) => `inhouse:memorial-s1:prev:${sessionId}`;
+export const memorialNextButtonId = (sessionId: string) => `inhouse:memorial-s1:next:${sessionId}`;
+export const parseMemorialButtonId = (
+  customId: string,
+): { sessionId: string; direction: "prev" | "next" } | null => {
+  const prevPrefix = "inhouse:memorial-s1:prev:";
+  const nextPrefix = "inhouse:memorial-s1:next:";
+  if (customId.startsWith(prevPrefix)) return { sessionId: customId.slice(prevPrefix.length), direction: "prev" };
+  if (customId.startsWith(nextPrefix)) return { sessionId: customId.slice(nextPrefix.length), direction: "next" };
+  return null;
+};
 
 export const discordCommands = [
   setupCommand,
@@ -488,7 +515,7 @@ export const discordCommands = [
   rankingCommand,
   historyCommand,
   lastMatchCommand,
-  mmrHistoryCommand,
+  pdlHistoryCommand,
   championCommand,
   synergyCommand,
   nemesisCommand,
@@ -507,7 +534,9 @@ export const discordCommands = [
   adminCancelCommand,
   adminWinUserCommand,
   adminCancelUserCommand,
+  adminShowMmrCommand,
   devCreateMatchCommand,
+  memorialSeason1Command,
 ].map((command) => command.toJSON());
 
 export const buildQueueButtons = (
@@ -746,7 +775,7 @@ export const buildMatchEmbed = (
       },
       {
         name: "Balanceamento",
-        value: `Blue winrate esperado: **${(match.blueExpectedWinrate * 100).toFixed(1)}%** | Delta MMR: **${match.muDifference.toFixed(2)}**`,
+        value: `Equilibrio estimado: **${(match.blueExpectedWinrate * 100).toFixed(1)}%** chance Blue`,
         inline: false,
       }
     )
@@ -868,8 +897,10 @@ export const buildRankingEmbed = (
 
     const winrate = entry.wins + entry.losses > 0 ? Math.round((entry.wins / (entry.wins + entry.losses)) * 100) : 0;
     const rolePrefix = entry.role ? `${roleIcon(entry.role, presentation)} ` : "";
+    const tIcon = tierIcon(entry.tier, presentation?.tierEmojis);
+    const tStr = formatTier(entry.tier, entry.division);
 
-    return `${medal}${rolePrefix}**${entry.displayName}** • ${Math.round(entry.mmr)} MMR \`[${entry.wins}W ${entry.losses}L | ${winrate}%]\``;
+    return `${medal}${rolePrefix}**${entry.displayName}** • ${tIcon} ${tStr} \`${entry.pdl} PDL\` \`[${entry.wins}W ${entry.losses}L | ${winrate}%]\``;
   }).join("\n");
 
   return new EmbedBuilder()
@@ -902,9 +933,12 @@ export const buildStatsEmbed = (
     return `${roleIcon(row.role, presentation)} **${roleName[row.role]}** — ${row.wins}V ${row.losses}D (${winrate}%)`;
   });
 
+  const tIcon = tierIcon(g.tier, presentation?.tierEmojis);
+  const tStr = formatTier(g.tier, g.division);
+
   embed.setDescription(
     [
-      `**MMR Global:** ${Math.round(g.mmr)} | ${rankText}`,
+      `**Elo:** ${tIcon} **${tStr}** — ${g.pdl} PDL | ${rankText}`,
       `**Partidas Totais:** ${g.totalGames} | **Taxa de Vitória:** ${globalWinrate}%`,
       `**Rota Principal:** ${mainRole ? `${roleIcon(mainRole.role, presentation)} ${roleName[mainRole.role]}` : "N/A"}`,
       "",
@@ -932,7 +966,7 @@ export const buildHistoryEmbed = (
 
     const championText = entry.championName ? ` como **${entry.championName}**` : "";
     
-    return `${circle} **${resultText}** ${roleIcon(entry.role, presentation)}${championText} • MMR: **${Math.round(entry.mmrBefore)}**\n` +
+    return `${circle} **${resultText}** ${roleIcon(entry.role, presentation)}${championText}\n` +
            `└ Partida: \`${formatMatchLabel(entry.matchNumber, entry.matchId)}\``;
   }).join("\n\n");
 
@@ -977,7 +1011,7 @@ const renderSummaryTeam = (
 ): string => {
   const rows = sortedParticipants(summary, team).map((participant) => {
     const champion = participant.championName ? ` | ${participant.championName}` : "";
-    return `${roleIcon(participant.role, presentation)} **${participant.displayName ?? participant.userId}** - ${Math.round(participant.mmrBefore)} MMR${champion}`;
+    return `${roleIcon(participant.role, presentation)} **${participant.displayName ?? participant.userId}**${champion}`;
   });
 
   return rows.join("\n") || "Sem jogadores.";
@@ -1015,7 +1049,7 @@ export const buildMatchSummaryEmbed = (
       },
       {
         name: "Balanceamento",
-        value: `Blue ${(summary.blueExpectedWinrate * 100).toFixed(1)}% | Delta MMR ${summary.muDifference.toFixed(2)}`,
+        value: `Chance estimada Blue: ${(summary.blueExpectedWinrate * 100).toFixed(1)}%`,
         inline: false,
       },
     )
@@ -1048,44 +1082,57 @@ export const buildActiveMatchesEmbed = (
   return embed;
 };
 
-export const buildMmrHistoryEmbed = (
+export const buildPdlHistoryEmbed = (
   displayName: string,
-  history: readonly MmrHistoryEntry[],
-  role?: Role,
+  history: readonly PdlHistoryEntry[],
   presentation?: DiscordPresentation,
 ): EmbedBuilder => {
   const embed = new EmbedBuilder()
     .setColor(COLORS.slate)
-    .setTitle(
-      role
-        ? `📈 Histórico de MMR de ${displayName} - ${roleName[role]}`
-        : `📈 Histórico de MMR de ${displayName}`,
-    );
+    .setTitle(`Historico de PDL de ${displayName}`);
 
   if (history.length === 0) {
-    return embed.setDescription("*Sem histórico de MMR.*");
+    return embed.setDescription("*Sem historico de PDL.*");
   }
 
-  const values = history.map((entry) => Math.round(entry.mmr));
+  const values = history.map((entry) => entry.pdlAfter);
   const first = values[0] ?? 0;
   const last = values[values.length - 1] ?? first;
   const diff = last - first;
   const emoji = diff > 0 ? "📈" : diff < 0 ? "📉" : "➖";
   const suffix = diff > 0 ? `+${diff}` : String(diff);
 
-  const recentMatches = history
-    .filter((entry) => !entry.isCurrent)
-    .slice(-3)
-    .map((entry) => `\`${formatMatchLabel(entry.matchNumber, entry.matchId)}\``)
-    .join(", ");
+  const current = history[history.length - 1]!;
+  const tIcon = tierIcon(current.tierAfter, presentation?.tierEmojis);
+  const tStr = formatTier(current.tierAfter, current.divisionAfter);
 
-  embed.addFields({
-    name: "MMR Global",
-    value: [`${emoji} **${first} ➔ ${last}** (${suffix})`, `Últimas partidas: ${recentMatches || "Nenhuma"}`].join(
-      "\n",
-    ),
-    inline: false,
-  });
+  // Recent matches list with deltas.
+  const recent = history
+    .filter((e) => !e.isCurrent)
+    .slice(-5)
+    .map((e) => {
+      const sign = e.pdlDelta >= 0 ? `+${e.pdlDelta}` : String(e.pdlDelta);
+      return `\`${formatMatchLabel(e.matchNumber, e.matchId)}\` ${sign} PDL`;
+    })
+    .join("\n");
+
+  embed.addFields(
+    {
+      name: "Elo atual",
+      value: `${tIcon} **${tStr}** — ${current.pdlAfter} PDL`,
+      inline: false,
+    },
+    {
+      name: "Evolucao",
+      value: `${emoji} **${first} → ${last}** (${suffix} PDL no periodo)`,
+      inline: false,
+    },
+    {
+      name: "Ultimas partidas",
+      value: recent || "Nenhuma",
+      inline: false,
+    },
+  );
 
   const chartConfig = {
     type: "line",
@@ -1093,7 +1140,7 @@ export const buildMmrHistoryEmbed = (
       labels: values.map((_, i) => `${i + 1}`),
       datasets: [
         {
-          label: "MMR",
+          label: "PDL",
           data: values,
           borderColor: "rgb(212, 167, 44)",
           backgroundColor: "transparent",
@@ -1194,11 +1241,18 @@ export const buildRoleReportEmbed = (
     );
 };
 
-export const buildTopEmbed = (highlights: ServerHighlights): EmbedBuilder => {
+export const buildTopEmbed = (
+  highlights: ServerHighlights,
+  presentation?: DiscordPresentation,
+): EmbedBuilder => {
   const lines: string[] = [];
 
-  if (highlights.topMmr) {
-    lines.push(`🏆 **Maior MMR:** ${highlights.topMmr.displayName} — **${Math.round(highlights.topMmr.mmr)}** MMR`);
+  if (highlights.topPdl) {
+    const icon = tierIcon(highlights.topPdl.tier, presentation?.tierEmojis);
+    const tierStr = formatTier(highlights.topPdl.tier, highlights.topPdl.division);
+    lines.push(
+      `🏆 **Topo do Ranking:** ${highlights.topPdl.displayName} — ${icon} **${tierStr}** (${highlights.topPdl.pdl} PDL)`,
+    );
   }
 
   if (highlights.topWinrate) {

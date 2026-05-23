@@ -12,6 +12,8 @@ import type {
 import type { Json } from "../core/models/database.js";
 import { conservativeMmr } from "../core/matchmaking/trueskillMath.js";
 import { MatchmakingService } from "../core/matchmaking/MatchmakingService.js";
+import { classifyByPdl, type Division, type Tier } from "../core/tier/tier.js";
+import { computePdlDelta } from "../core/tier/pdl.js";
 import { supabase } from "./supabaseClient.js";
 
 const jsonStringArray = (value: Json): string[] => {
@@ -298,12 +300,83 @@ export class MatchService {
     const updates = this.matchmaking.calculateUpdatedRatings(match, winningTeam);
     const now = new Date().toISOString();
 
-    const { error: statsError } = await supabase.from("player_stats_global").upsert(
-      updates.map((rating) => ({
-        guild_id: matchRow.guild_id,
-        user_id: rating.userId,
+    // --- PDL pipeline ---
+    // 1) Load current PDL/tier/division for each user.
+    const userIds = updates.map((u) => u.userId);
+    const { data: currentStats, error: currentStatsErr } = await supabase
+      .from("player_stats_global")
+      .select("user_id, mu, sigma, mmr, pdl, tier, division")
+      .eq("guild_id", matchRow.guild_id)
+      .in("user_id", userIds);
+
+    if (currentStatsErr) {
+      throw new Error(`Failed to load current stats: ${currentStatsErr.message}`);
+    }
+
+    const currentByUser = new Map(
+      (currentStats ?? []).map((row) => [
+        row.user_id,
+        {
+          mmr: row.mmr,
+          pdl: row.pdl ?? 0,
+          tier: (row.tier ?? "BRONZE") as Tier,
+          division: (row.division ?? 4) as Division,
+        },
+      ]),
+    );
+
+    // 2) Build team membership map from BalancedMatch (to know who won).
+    const teamByUser = new Map<string, Team>();
+    for (const slot of match.teamBlue) teamByUser.set(slot.player.userId, "BLUE");
+    for (const slot of match.teamRed) teamByUser.set(slot.player.userId, "RED");
+
+    // 3) Compute PDL delta + new tier for each player.
+    const pdlOutcomes = updates.map((rating) => {
+      const team = teamByUser.get(rating.userId);
+      if (!team) {
+        throw new Error(`Missing team membership for user ${rating.userId}.`);
+      }
+      const won = team === winningTeam;
+      const expectedWinrate =
+        team === "BLUE" ? match.blueExpectedWinrate : 1 - match.blueExpectedWinrate;
+      const { pdlDelta } = computePdlDelta({ won, expectedWinrate });
+
+      const current = currentByUser.get(rating.userId) ?? {
+        mmr: 0,
+        pdl: 0,
+        tier: "BRONZE" as Tier,
+        division: 4 as Division,
+      };
+      const pdlBefore = current.pdl;
+      const pdlAfter = Math.max(0, pdlBefore + pdlDelta);
+      const positionAfter = classifyByPdl(pdlAfter);
+
+      return {
+        userId: rating.userId,
         mu: rating.mu,
         sigma: rating.sigma,
+        mmr: rating.mmr,
+        mmrBefore: current.mmr,
+        pdlBefore,
+        pdlAfter,
+        pdlDelta,
+        tierBefore: current.tier,
+        tierAfter: positionAfter.tier,
+        divisionBefore: current.division,
+        divisionAfter: positionAfter.division,
+      };
+    });
+
+    // 4) Upsert player_stats_global with new mu/sigma/PDL/tier/division.
+    const { error: statsError } = await supabase.from("player_stats_global").upsert(
+      pdlOutcomes.map((o) => ({
+        guild_id: matchRow.guild_id,
+        user_id: o.userId,
+        mu: o.mu,
+        sigma: o.sigma,
+        pdl: o.pdlAfter,
+        tier: o.tierAfter,
+        division: o.divisionAfter,
         updated_at: now,
       })),
       { onConflict: "guild_id,user_id" },
@@ -311,6 +384,29 @@ export class MatchService {
 
     if (statsError) {
       throw new Error(`Failed to update player stats: ${statsError.message}`);
+    }
+
+    // 5) Insert PDL history rows for this match.
+    const { error: pdlHistoryError } = await supabase.from("pdl_history").insert(
+      pdlOutcomes.map((o) => ({
+        guild_id: matchRow.guild_id,
+        user_id: o.userId,
+        match_id: matchId,
+        pdl_before: o.pdlBefore,
+        pdl_after: o.pdlAfter,
+        pdl_delta: o.pdlDelta,
+        tier_before: o.tierBefore,
+        tier_after: o.tierAfter,
+        division_before: o.divisionBefore,
+        division_after: o.divisionAfter,
+        mmr_before: Math.round(o.mmrBefore),
+        mmr_after: Math.round(o.mmr),
+      })),
+    );
+
+    if (pdlHistoryError) {
+      // Non-fatal: log but do not block match completion.
+      console.error("Failed to write pdl_history:", pdlHistoryError.message);
     }
 
     const { error: matchError } = await supabase
