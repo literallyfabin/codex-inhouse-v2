@@ -9,6 +9,7 @@ import {
 import type { BalancedMatch, QueuePlayer, QueueRole, Role, Team } from "../../core/models/types.js";
 import { ROLES } from "../../core/models/types.js";
 import {
+  DIVISION_LABEL,
   TIERS,
   TIER_EMOJI_NAMES,
   TIER_LABEL,
@@ -185,6 +186,16 @@ const rankTag = (
 ): string => {
   if (!value.tier || value.division === null || value.pdl === null) return "";
   return `${tierIcon(value.tier, presentation?.tierEmojis)} ${formatTier(value.tier, value.division)} \`${value.pdl} PDL\``;
+};
+
+const compactRankTag = (
+  value: { tier?: Tier | null; division?: Division | null },
+  presentation?: DiscordPresentation,
+): string => {
+  if (!value.tier || value.division === undefined || value.division === null) return "";
+  const icon = tierIcon(value.tier, presentation?.tierEmojis);
+  const label = value.division === 0 ? formatTier(value.tier, value.division) : DIVISION_LABEL[value.division];
+  return `${icon} ${label}`.trim();
 };
 
 const pdlProgressBar = (pdl: number, tier: Tier, division: Division): string => {
@@ -717,7 +728,8 @@ export const buildQueueEmbed = (
     if (!player) return playerLabel(undefined);
     const duoIndicator = duoMap.get(player.userId);
     const name = playerLabel(player.displayName);
-    return duoIndicator ? `${name} ${duoIndicator}` : name;
+    const rank = compactRankTag(player, presentation);
+    return [name, rank, duoIndicator].filter(Boolean).join(" ");
   };
 
   const slotColumn = (slotIndex: number): string =>

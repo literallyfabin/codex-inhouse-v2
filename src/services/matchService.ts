@@ -132,7 +132,7 @@ export class MatchService {
 
     const { data, error } = await supabase
       .from("player_stats_global")
-      .select("guild_id, user_id, mu, sigma, mmr")
+      .select("guild_id, user_id, mu, sigma, mmr, pdl, tier, division")
       .eq("guild_id", guildId)
       .in("user_id", userIds);
 
@@ -141,7 +141,10 @@ export class MatchService {
     }
 
     const ratingsByUserId = new Map<string, PlayerRating>();
+    const rankByUserId = new Map<string, { pdl: number; tier: Tier; division: Division }>();
     for (const row of data) {
+      const pdl = row.pdl ?? 0;
+      const classified = classifyByPdl(pdl);
       ratingsByUserId.set(row.user_id, {
         guildId: row.guild_id,
         userId: row.user_id,
@@ -149,6 +152,11 @@ export class MatchService {
         mu: row.mu,
         sigma: row.sigma,
         mmr: row.mmr,
+      });
+      rankByUserId.set(row.user_id, {
+        pdl,
+        tier: (row.tier ?? classified.tier) as Tier,
+        division: (row.division ?? classified.division) as Division,
       });
     }
 
@@ -163,9 +171,69 @@ export class MatchService {
 
       return {
         ...player,
+        ...rankByUserId.get(player.userId),
         rating: { ...base, role: player.role as Role },
         streak: streaks.get(player.userId) ?? 0,
       };
+    });
+  }
+
+  async attachVisibleRanks<T extends QueuePlayer>(players: readonly T[]): Promise<T[]> {
+    if (players.length === 0) {
+      return [];
+    }
+
+    const usersByGuild = new Map<string, Set<string>>();
+    for (const player of players) {
+      const userIds = usersByGuild.get(player.guildId) ?? new Set<string>();
+      userIds.add(player.userId);
+      usersByGuild.set(player.guildId, userIds);
+    }
+
+    const rankByKey = new Map<string, { pdl: number; tier: Tier; division: Division }>();
+    for (const [guildId, userIdSet] of usersByGuild) {
+      const userIds = [...userIdSet];
+      const defaultRows = userIds.map((userId) => ({
+        guild_id: guildId,
+        user_id: userId,
+        updated_at: new Date().toISOString(),
+      }));
+
+      const { error: upsertError } = await supabase
+        .from("player_stats_global")
+        .upsert(defaultRows, { onConflict: "guild_id,user_id", ignoreDuplicates: true });
+
+      if (upsertError) {
+        throw new Error(`Failed to prepare player ranks: ${upsertError.message}`);
+      }
+
+      const { data, error } = await supabase
+        .from("player_stats_global")
+        .select("user_id, pdl, tier, division")
+        .eq("guild_id", guildId)
+        .in("user_id", userIds);
+
+      if (error) {
+        throw new Error(`Failed to load player ranks: ${error.message}`);
+      }
+
+      for (const row of data) {
+        const pdl = row.pdl ?? 0;
+        const classified = classifyByPdl(pdl);
+        rankByKey.set(`${guildId}:${row.user_id}`, {
+          pdl,
+          tier: (row.tier ?? classified.tier) as Tier,
+          division: (row.division ?? classified.division) as Division,
+        });
+      }
+    }
+
+    return players.map((player) => {
+      const rank = rankByKey.get(`${player.guildId}:${player.userId}`) ?? {
+        pdl: 0,
+        ...classifyByPdl(0),
+      };
+      return { ...player, ...rank };
     });
   }
 

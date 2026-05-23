@@ -288,7 +288,7 @@ export class DiscordGateway {
 
           const presentation = await this.presentationForGuild(interaction.guildId);
           await interaction.editReply({
-            embeds: [buildQueueEmbed(this.queueService.snapshot(interaction.channelId), presentation)],
+            embeds: [buildQueueEmbed(await this.withVisibleQueueRanks(this.queueService.snapshot(interaction.channelId)), presentation)],
           });
         }
         return;
@@ -525,7 +525,7 @@ export class DiscordGateway {
     const snapshot = this.queueService.leave(interaction.channelId, user.id);
     await this.queueRepository.removeUserFromChannel(interaction.channelId, user.id);
     const presentation = await this.presentationForGuild(interaction.guildId);
-    await this.respondEphemeral(interaction, { embeds: [buildQueueEmbed(snapshot, presentation)] });
+    await this.respondEphemeral(interaction, { embeds: [buildQueueEmbed(await this.withVisibleQueueRanks(snapshot), presentation)] });
     await this.refreshQueueChannels(interaction.guildId);
   }
 
@@ -1816,7 +1816,7 @@ export class DiscordGateway {
     matchPlayers?: QueuePlayer[],
   ): Promise<void> {
     const presentation = await this.presentationForGuild(interaction.guildId);
-    await interaction.editReply({ embeds: [buildQueueEmbed(snapshot, presentation)] });
+    await interaction.editReply({ embeds: [buildQueueEmbed(await this.withVisibleQueueRanks(snapshot), presentation)] });
     await this.handleQueueJoinResult(
       interaction.guildId,
       interaction.channelId,
@@ -2383,6 +2383,34 @@ export class DiscordGateway {
     return isQueueRole(role) ? role : null;
   }
 
+  private async withVisibleQueueRanks(snapshot: QueueSnapshot): Promise<QueueSnapshot> {
+    const allPlayers = [...ROLES.flatMap((role) => snapshot.roles[role]), ...snapshot.fillPlayers];
+    if (allPlayers.length === 0) {
+      return snapshot;
+    }
+
+    try {
+      const rankedPlayers = await this.matchService.attachVisibleRanks(allPlayers);
+      const rankByUserId = new Map(rankedPlayers.map((player) => [player.userId, player]));
+      const enrich = (player: QueuePlayer): QueuePlayer => rankByUserId.get(player.userId) ?? player;
+
+      return {
+        ...snapshot,
+        roles: {
+          TOP: snapshot.roles.TOP.map(enrich),
+          JGL: snapshot.roles.JGL.map(enrich),
+          MID: snapshot.roles.MID.map(enrich),
+          ADC: snapshot.roles.ADC.map(enrich),
+          SUP: snapshot.roles.SUP.map(enrich),
+        },
+        fillPlayers: snapshot.fillPlayers.map(enrich),
+      };
+    } catch (error) {
+      console.warn("Failed to attach visible queue ranks", error);
+      return snapshot;
+    }
+  }
+
   private async presentationForGuild(guildId: string | null): Promise<DiscordPresentation> {
     if (!guildId) {
       return {};
@@ -2446,7 +2474,7 @@ export class DiscordGateway {
       await this.clearManagedMessages(channel, (title) => title.includes("Fila"), {
         deleteNonBotMessages: true,
       });
-      const embeds = [buildQueueEmbed(this.queueService.snapshot(marked.channelId), presentation)];
+      const embeds = [buildQueueEmbed(await this.withVisibleQueueRanks(this.queueService.snapshot(marked.channelId)), presentation)];
       const activeMatchesEmbed = buildActiveMatchesEmbed(activeMatches, presentation);
       if (activeMatchesEmbed) {
         embeds.push(activeMatchesEmbed);

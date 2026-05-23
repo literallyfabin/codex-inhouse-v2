@@ -1,3 +1,5 @@
+import type { Division, Tier } from "../tier/tier.js";
+
 export const ROLES = ["TOP", "JGL", "MID", "ADC", "SUP"] as const;
 export type Role = (typeof ROLES)[number];
 
@@ -23,6 +25,9 @@ export interface QueuePlayer extends PlatformIdentity {
   channelId: string;
   userId: string;
   role: QueueRole;
+  pdl?: number;
+  tier?: Tier;
+  division?: Division;
   duoUserId?: string | null;
   readyCheckId?: string | null;
   joinedAt: Date;

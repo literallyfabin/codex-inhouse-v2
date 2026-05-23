@@ -277,26 +277,25 @@ export class SeasonArchiveService {
       }
     }
 
-    // Top current win streak
+    // Top historical win streak
     const sortedMatches = [...matches.entries()]
       .filter(([, m]) => m.winning_team !== "NONE")
       .sort(([, a], [, b]) => Date.parse(a.completed_at ?? a.created_at) - Date.parse(b.completed_at ?? b.created_at));
 
-    const streaks = new Map<string, number>();
+    const currentStreaks = new Map<string, number>();
+    let topStreak: SeasonHighlights["topStreak"] = null;
+    let bestStreak = 0;
     for (const [matchId, match] of sortedMatches) {
       for (const p of participants.filter((pp) => pp.match_id === matchId)) {
         const won = match.winning_team === p.team;
-        const cur = streaks.get(p.user_id) ?? 0;
-        streaks.set(p.user_id, won ? (cur > 0 ? cur + 1 : 1) : cur < 0 ? cur - 1 : -1);
-      }
-    }
-    let topStreak: SeasonHighlights["topStreak"] = null;
-    let bestStreak = 0;
-    for (const [uid, s] of streaks) {
-      if (s > bestStreak) {
-        bestStreak = s;
-        const user = profile(uid);
-        topStreak = { displayName: user.displayName, discordId: user.discordId, streak: s };
+        const next = won ? (currentStreaks.get(p.user_id) ?? 0) + 1 : 0;
+        currentStreaks.set(p.user_id, next);
+
+        if (next > bestStreak) {
+          bestStreak = next;
+          const user = profile(p.user_id);
+          topStreak = { displayName: user.displayName, discordId: user.discordId, streak: next };
+        }
       }
     }
 
