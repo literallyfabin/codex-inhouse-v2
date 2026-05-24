@@ -1113,34 +1113,19 @@ export const buildMatchSummaryEmbed = (
     .setFooter({ text: `UUID interno: ${summary.id}` });
 };
 
-// Short ASCII role codes (emojis don't render inside code blocks).
-const ROLE_SHORT: Record<Role, string> = {
-  TOP: "TOP",
-  JGL: "JGL",
-  MID: "MID",
-  ADC: "ADC",
-  SUP: "SUP",
-};
-
-const renderVerticalTeam = (summary: MatchSummary, team: Team): string => {
-  const players = sortedParticipants(summary, team);
-  if (players.length === 0) return "```\nSem jogadores\n```";
-
-  // Pre-compute widest values so columns line up.
-  const nameW = Math.max(...players.map((p) => (p.displayName ?? p.userId).length));
-  const tierW = Math.max(
-    ...players.map((p) => formatTier(p.tier ?? "BRONZE", p.division ?? 4).length),
-  );
-
-  const lines = players.map((p) => {
-    const name = (p.displayName ?? p.userId).padEnd(nameW);
-    const tierStr = formatTier(p.tier ?? "BRONZE", p.division ?? 4).padEnd(tierW);
-    const pdl = String(p.pdl ?? 0).padStart(3);
-    return `${ROLE_SHORT[p.role]} ${name} ${tierStr} ${pdl} PDL`;
-  });
-
-  return "```\n" + lines.join("\n") + "\n```";
-};
+const renderVerticalTeam = (
+  summary: MatchSummary,
+  team: Team,
+  presentation?: DiscordPresentation,
+): string =>
+  sortedParticipants(summary, team)
+    .map((participant) => {
+      const elo = rankTag(participant, presentation);
+      const champion = participant.championName ? ` - ${participant.championName}` : "";
+      const name = participant.displayName ?? participant.userId;
+      return `${roleIcon(participant.role, presentation)} **${name}**${elo ? ` ${elo}` : ""}${champion}`;
+    })
+    .join("\n") || "Sem jogadores";
 
 export const buildActiveMatchesEmbed = (
   matches: readonly MatchSummary[],
@@ -1154,23 +1139,33 @@ export const buildActiveMatchesEmbed = (
     .setColor(COLORS.green)
     .setTitle(`⚔️ ${matches.length} partida${matches.length > 1 ? "s" : ""} em andamento`);
 
-  for (const match of matches) {
+  matches.forEach((match, idx) => {
     const label = formatMatchLabel(match.matchNumber, match.id);
+    // 3 inline fields per match: Blue | Red | spacer.
+    // The 3rd inline field forces Discord into 3-col layout, which fills the row
+    // and prevents the awkward empty space below 2 inline fields.
     embed.addFields(
       {
         name: `${label} — 🔵 Blue`,
-        value: renderVerticalTeam(match, "BLUE"),
+        value: renderVerticalTeam(match, "BLUE", presentation),
         inline: true,
       },
       {
         name: "🔴 Red",
-        value: renderVerticalTeam(match, "RED"),
+        value: renderVerticalTeam(match, "RED", presentation),
         inline: true,
       },
-      // Spacer field to force next match onto its own row.
-      { name: "​", value: "​", inline: false },
+      {
+        name: "​",
+        value: "​",
+        inline: true,
+      },
     );
-  }
+    // Only add a non-inline divider between matches (not after the last one).
+    if (idx < matches.length - 1) {
+      embed.addFields({ name: "​", value: "​", inline: false });
+    }
+  });
 
   return embed;
 };
