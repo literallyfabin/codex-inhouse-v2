@@ -1113,6 +1113,20 @@ export const buildMatchSummaryEmbed = (
     .setFooter({ text: `UUID interno: ${summary.id}` });
 };
 
+const renderVerticalTeam = (
+  summary: MatchSummary,
+  team: Team,
+  presentation?: DiscordPresentation,
+): string =>
+  sortedParticipants(summary, team)
+    .map((participant) => {
+      const elo = rankTag(participant, presentation);
+      const champion = participant.championName ? ` - ${participant.championName}` : "";
+      const name = participant.displayName ?? participant.userId;
+      return `${roleIcon(participant.role, presentation)} **${name}**${elo ? ` ${elo}` : ""}${champion}`;
+    })
+    .join("\n") || "Sem jogadores";
+
 export const buildActiveMatchesEmbed = (
   matches: readonly MatchSummary[],
   presentation?: DiscordPresentation,
@@ -1126,14 +1140,21 @@ export const buildActiveMatchesEmbed = (
     .setTitle(`⚔️ ${matches.length} partida${matches.length > 1 ? "s" : ""} em andamento`);
 
   for (const match of matches) {
-    embed.addFields({
-      name: formatMatchLabel(match.matchNumber, match.id),
-      value: [
-        `🔵 ${renderCompactTeam(match, "BLUE", presentation)}`,
-        `🔴 ${renderCompactTeam(match, "RED", presentation)}`,
-      ].join("\n"),
-      inline: false,
-    });
+    const label = formatMatchLabel(match.matchNumber, match.id);
+    embed.addFields(
+      {
+        name: `${label} — 🔵 Blue`,
+        value: renderVerticalTeam(match, "BLUE", presentation),
+        inline: true,
+      },
+      {
+        name: "🔴 Red",
+        value: renderVerticalTeam(match, "RED", presentation),
+        inline: true,
+      },
+      // Spacer field to force next match onto its own row.
+      { name: "​", value: "​", inline: false },
+    );
   }
 
   return embed;
