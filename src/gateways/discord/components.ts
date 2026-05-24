@@ -1113,19 +1113,34 @@ export const buildMatchSummaryEmbed = (
     .setFooter({ text: `UUID interno: ${summary.id}` });
 };
 
-const renderVerticalTeam = (
-  summary: MatchSummary,
-  team: Team,
-  presentation?: DiscordPresentation,
-): string =>
-  sortedParticipants(summary, team)
-    .map((participant) => {
-      const elo = rankTag(participant, presentation);
-      const champion = participant.championName ? ` - ${participant.championName}` : "";
-      const name = participant.displayName ?? participant.userId;
-      return `${roleIcon(participant.role, presentation)} **${name}**${elo ? ` ${elo}` : ""}${champion}`;
-    })
-    .join("\n") || "Sem jogadores";
+// Short ASCII role codes (emojis don't render inside code blocks).
+const ROLE_SHORT: Record<Role, string> = {
+  TOP: "TOP",
+  JGL: "JGL",
+  MID: "MID",
+  ADC: "ADC",
+  SUP: "SUP",
+};
+
+const renderVerticalTeam = (summary: MatchSummary, team: Team): string => {
+  const players = sortedParticipants(summary, team);
+  if (players.length === 0) return "```\nSem jogadores\n```";
+
+  // Pre-compute widest values so columns line up.
+  const nameW = Math.max(...players.map((p) => (p.displayName ?? p.userId).length));
+  const tierW = Math.max(
+    ...players.map((p) => formatTier(p.tier ?? "BRONZE", p.division ?? 4).length),
+  );
+
+  const lines = players.map((p) => {
+    const name = (p.displayName ?? p.userId).padEnd(nameW);
+    const tierStr = formatTier(p.tier ?? "BRONZE", p.division ?? 4).padEnd(tierW);
+    const pdl = String(p.pdl ?? 0).padStart(3);
+    return `${ROLE_SHORT[p.role]} ${name} ${tierStr} ${pdl} PDL`;
+  });
+
+  return "```\n" + lines.join("\n") + "\n```";
+};
 
 export const buildActiveMatchesEmbed = (
   matches: readonly MatchSummary[],
@@ -1144,12 +1159,12 @@ export const buildActiveMatchesEmbed = (
     embed.addFields(
       {
         name: `${label} — 🔵 Blue`,
-        value: renderVerticalTeam(match, "BLUE", presentation),
+        value: renderVerticalTeam(match, "BLUE"),
         inline: true,
       },
       {
         name: "🔴 Red",
-        value: renderVerticalTeam(match, "RED", presentation),
+        value: renderVerticalTeam(match, "RED"),
         inline: true,
       },
       // Spacer field to force next match onto its own row.
