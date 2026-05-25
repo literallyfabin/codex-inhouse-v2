@@ -401,6 +401,9 @@ export class MatchService {
     for (const slot of match.teamBlue) teamByUser.set(slot.player.userId, "BLUE");
     for (const slot of match.teamRed) teamByUser.set(slot.player.userId, "RED");
 
+    // 2.5) Streak BEFORE this match (positive=wins in a row, negative=losses).
+    const streakByUser = await this.computeStreaks(matchRow.guild_id, userIds);
+
     // 3) Compute PDL delta + new tier for each player.
     const pdlOutcomes = updates.map((rating) => {
       const team = teamByUser.get(rating.userId);
@@ -410,7 +413,8 @@ export class MatchService {
       const won = team === winningTeam;
       const expectedWinrate =
         team === "BLUE" ? match.blueExpectedWinrate : 1 - match.blueExpectedWinrate;
-      const { pdlDelta } = computePdlDelta({ won, expectedWinrate });
+      const currentStreak = streakByUser.get(rating.userId) ?? 0;
+      const { pdlDelta } = computePdlDelta({ won, expectedWinrate, currentStreak });
 
       const current = currentByUser.get(rating.userId) ?? {
         mmr: 0,
