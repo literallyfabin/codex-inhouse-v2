@@ -483,7 +483,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     await this.guildService.setExclusiveChannel(interaction.guildId, interaction.channelId, "QUEUE");
     await this.refreshQueueChannels(interaction.guildId);
     await interaction.editReply("Canal configurado como fila oficial de inhouse.");
@@ -499,7 +501,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     await this.guildService.setExclusiveChannel(interaction.guildId, interaction.channelId, "RANKING");
     await this.refreshRankingChannels(interaction.guildId);
     await interaction.editReply("Canal configurado como ranking oficial de inhouse.");
@@ -546,7 +550,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const matchId = await this.matchService.resolveMatchId(interaction.guildId, matchInput);
     const matchContext = await this.matchService.getMatchContext(matchId);
     await this.matchService.completeMatch(matchId, team);
@@ -755,7 +761,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const target = interaction.options.getUser("jogador") ?? interaction.user;
     const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
     await this.userService.ensureDefaultStats(interaction.guildId, user.id);
@@ -776,7 +784,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const target = interaction.options.getUser("jogador") ?? interaction.user;
     const user = await this.userService.getUserByPlatformId("discord", target.id);
     
@@ -796,7 +806,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const target = interaction.options.getUser("jogador") ?? interaction.user;
     const user = await this.userService.getUserByPlatformId("discord", target.id);
     
@@ -816,7 +828,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply();
+    if (!(await this.deferPublic(interaction))) {
+      return;
+    }
     const highlights = await this.statsService.getServerHighlights(interaction.guildId);
 
     if (!highlights) {
@@ -835,7 +849,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const target = interaction.options.getUser("jogador") ?? interaction.user;
     const user = await this.userService.getUserByPlatformId("discord", target.id);
 
@@ -862,7 +878,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply();
+    if (!(await this.deferPublic(interaction))) {
+      return;
+    }
     const target = interaction.options.getUser("jogador") ?? interaction.user;
     const user = await this.userService.getUserByPlatformId("discord", target.id);
 
@@ -894,7 +912,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply();
+    if (!(await this.deferPublic(interaction))) {
+      return;
+    }
     const demand = await this.statsService.getRoleDemand(interaction.guildId);
 
     if (!demand) {
@@ -913,7 +933,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply();
+    if (!(await this.deferPublic(interaction))) {
+      return;
+    }
 
     let overview: SeasonOverview;
     let highlights: SeasonHighlights | null;
@@ -1214,7 +1236,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const target = interaction.options.getUser("jogador") ?? interaction.user;
     const limit = interaction.options.getInteger("limite") ?? 10;
     const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
@@ -1235,7 +1259,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const target = interaction.options.getUser("jogador");
     const user = target
       ? await this.userService.upsertDiscordUser(target.id, target.displayName)
@@ -1261,7 +1287,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
 
     const arg1 = interaction.options.getUser("jogador1");
     const arg2 = interaction.options.getUser("jogador2");
@@ -1300,7 +1328,9 @@ export class DiscordGateway {
     const nick = interaction.options.getString("nick", true).trim();
     const tag = interaction.options.getString("tag", true).trim().replace(/^#/, "");
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
 
     // Check if already linked
     const existing = await riotOAuthService.getRiotAccountForDiscordId(interaction.user.id);
@@ -1337,7 +1367,9 @@ export class DiscordGateway {
     const limit = interaction.options.getInteger("limite") ?? 30;
     const target = interaction.options.getUser("jogador") ?? interaction.user;
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
     const history = await this.statsService.getPdlHistory(interaction.guildId, user.id, limit);
     const presentation = await this.presentationForGuild(interaction.guildId);
@@ -1357,7 +1389,9 @@ export class DiscordGateway {
     }
 
     const target = interaction.options.getUser("jogador", true);
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
     const summary = await this.statsService.getPlayerSummary(interaction.guildId, user.id);
 
@@ -1386,7 +1420,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const championName = interaction.options.getString("nome", true).trim();
     const matchInput = interaction.options.getString("match_id")?.trim();
     const matchId = matchInput ? await this.matchService.resolveMatchId(interaction.guildId, matchInput) : undefined;
@@ -1658,7 +1694,9 @@ export class DiscordGateway {
     }
 
     const matchInput = interaction.options.getString("match_id", true);
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const matchId = await this.matchService.resolveMatchId(interaction.guildId, matchInput);
     const matchContext = await this.matchService.getMatchContext(matchId);
     await this.matchService.cancelMatch(matchId);
@@ -1679,7 +1717,9 @@ export class DiscordGateway {
     }
 
     const target = interaction.options.getUser("jogador", true);
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
     const match = await this.matchService.getLatestOngoingMatchForUser(interaction.guildId, user.id);
     if (!match) {
@@ -1708,7 +1748,9 @@ export class DiscordGateway {
     }
 
     const target = interaction.options.getUser("jogador", true);
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const user = await this.userService.upsertDiscordUser(target.id, target.displayName);
     const match = await this.matchService.getLatestOngoingMatchForUser(interaction.guildId, user.id);
     if (!match) {
@@ -1739,7 +1781,9 @@ export class DiscordGateway {
       return;
     }
 
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!(await this.deferEphemeral(interaction))) {
+      return;
+    }
     const realUser = await this.userService.upsertDiscordUser(
       interaction.user.id,
       interaction.user.displayName,
@@ -2257,6 +2301,28 @@ export class DiscordGateway {
           code,
           customId: interaction.isButton() ? interaction.customId : undefined,
           commandName: interaction.isChatInputCommand() ? interaction.commandName : undefined,
+        });
+        return false;
+      }
+
+      throw error;
+    }
+  }
+
+  private async deferPublic(interaction: ChatInputCommandInteraction): Promise<boolean> {
+    if (interaction.deferred || interaction.replied) {
+      return true;
+    }
+
+    try {
+      await interaction.deferReply();
+      return true;
+    } catch (error) {
+      const code = this.discordErrorCode(error);
+      if (code === 10062 || code === 40060) {
+        console.warn("Discord public interaction skipped before acknowledgement", {
+          code,
+          commandName: interaction.commandName,
         });
         return false;
       }
