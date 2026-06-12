@@ -17,10 +17,12 @@ interface RiotCallbackPayload {
 }
 
 type DiscordNotifier = (discordId: string, gameName: string, tagLine: string) => Promise<void>;
+type StatusProvider = () => Record<string, unknown>;
 
 export class WebhookServer {
   private server: http.Server;
   private discordNotifier?: DiscordNotifier;
+  private statusProvider?: StatusProvider;
 
   constructor(private matchService: MatchService) {
     this.server = http.createServer(this.handleRequest.bind(this));
@@ -33,11 +35,19 @@ export class WebhookServer {
     this.discordNotifier = notifier;
   }
 
+  setStatusProvider(provider: StatusProvider): void {
+    this.statusProvider = provider;
+  }
+
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
     // Route: GET / — Health check (required by Render)
     if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ status: "ok", service: "codex-inhouse-bot" }));
+      res.end(JSON.stringify({
+        status: "ok",
+        service: "codex-inhouse-bot",
+        ...(this.statusProvider?.() ?? {}),
+      }));
       return;
     }
 
@@ -235,4 +245,3 @@ export class WebhookServer {
 </html>`;
   }
 }
-

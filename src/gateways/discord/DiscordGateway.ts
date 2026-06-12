@@ -170,11 +170,27 @@ export class DiscordGateway {
   ) {}
 
   async start(): Promise<void> {
-    this.client.once(Events.ClientReady, (readyClient) => {
-      console.log(`Discord gateway logged in as ${readyClient.user.tag}.`);
-      this.bootstrap().catch((error: unknown) => {
-        console.error("Discord bootstrap failed", error);
+    const readyPromise = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error("Discord gateway did not become ready within 30 seconds."));
+      }, 30_000);
+
+      this.client.once(Events.ClientReady, (readyClient) => {
+        clearTimeout(timeout);
+        console.log(`Discord gateway logged in as ${readyClient.user.tag}.`);
+        this.bootstrap().catch((error: unknown) => {
+          console.error("Discord bootstrap failed", error);
+        });
+        resolve();
       });
+    });
+
+    this.client.on(Events.Error, (error) => {
+      console.error("Discord client error", error);
+    });
+
+    this.client.on(Events.Warn, (message) => {
+      console.warn("Discord client warning", message);
     });
 
     this.client.on(Events.InteractionCreate, (interaction) => {
@@ -186,6 +202,15 @@ export class DiscordGateway {
     });
 
     await this.client.login(this.token);
+    await readyPromise;
+  }
+
+  getStatus(): { ready: boolean; user: string | null; guilds: string[] } {
+    return {
+      ready: this.client.isReady(),
+      user: this.client.user?.tag ?? null,
+      guilds: [...this.client.guilds.cache.keys()],
+    };
   }
 
   private async bootstrap(): Promise<void> {
