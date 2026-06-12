@@ -40,26 +40,28 @@ export class WebhookServer {
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
+    const path = req.url ? new URL(req.url, "http://localhost").pathname : "/";
     // Route: GET / — Health check (required by Render)
-    if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
+    if (req.method === "GET" && (path === "/" || path === "/health")) {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
         status: "ok",
         service: "codex-inhouse-bot",
+        commit: process.env.RENDER_GIT_COMMIT ?? null,
         ...(this.statusProvider?.() ?? {}),
       }));
       return;
     }
 
     // Route: GET /riot.txt — Riot domain ownership verification
-    if (req.method === "GET" && req.url === "/riot.txt") {
+    if (req.method === "GET" && path === "/riot.txt") {
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end(process.env.RIOT_VERIFICATION_TOKEN ?? "");
       return;
     }
 
     // Route: POST /riot/callback — Riot tournament match result
-    if (req.method === "POST" && req.url === "/riot/callback") {
+    if (req.method === "POST" && path === "/riot/callback") {
       let body = "";
       req.on("data", (chunk) => { body += chunk.toString(); });
       req.on("end", async () => {
@@ -78,8 +80,8 @@ export class WebhookServer {
     }
 
     // Route: GET /riot/oauth/callback — RSO OAuth2 redirect from Riot
-    if (req.method === "GET" && req.url?.startsWith("/riot/oauth/callback")) {
-      const url = new URL(req.url, `http://localhost`);
+    if (req.method === "GET" && path === "/riot/oauth/callback") {
+      const url = new URL(req.url ?? "/", `http://localhost`);
       const code = url.searchParams.get("code");
       const state = url.searchParams.get("state");
 
